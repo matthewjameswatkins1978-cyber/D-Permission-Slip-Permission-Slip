@@ -1,0 +1,142 @@
+{
+  "schema": "permission-slip.doctrine/1",
+  "profile": "matthew.v0.1",
+  "human": {
+    "id": "matthew",
+    "display_name": "Matthew",
+    "note": "Customer Zero. Human-facing doctrine only; Tethers remains the semantic authority."
+  },
+  "project": {
+    "id": "permission-slip",
+    "display_name": "Permission Slip",
+    "root_scope": "runtime/spike-workspace/",
+    "canonical_repository": "https://github.com/matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip"
+  },
+  "actors": {
+    "matthew": {
+      "id": "matthew",
+      "display_name": "Matthew",
+      "trusted": true,
+      "merge_authority": false
+    },
+    "lucy": {
+      "id": "lucy",
+      "display_name": "Lucy",
+      "trusted": true,
+      "merge_authority": true,
+      "role": "accepted-work merge authority"
+    },
+    "worker-agent": {
+      "id": "worker-agent",
+      "display_name": "Worker agent",
+      "trusted": true,
+      "merge_authority": false
+    },
+    "agent-two": {
+      "id": "agent-two",
+      "display_name": "Second agent",
+      "trusted": true,
+      "merge_authority": false
+    }
+  },
+  "boundaries": {
+    "public_identity": {
+      "subject": "matthew",
+      "note": "Public communication as Matthew is reserved to an explicit per-call decision."
+    },
+    "external_upload": {
+      "known_destinations": [],
+      "note": "A destination not seen before is novel; disclosure cannot be undone."
+    },
+    "promotional_credit": {
+      "provider": "cloud-fixture",
+      "budget_cents": 5000,
+      "currency": "USD",
+      "note": "Bounded free/promotional credit only. Real money is a separate consequence."
+    }
+  },
+  "capabilities": [
+    {
+      "action": "dev.tests.run",
+      "purpose": "Run the project's automated test suite.",
+      "standing": "allow",
+      "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
+      "reversibility": "reversible",
+      "effects": ["compute.run"]
+    },
+    {
+      "action": "project.files.edit",
+      "purpose": "Edit a file inside the Permission Slip project workspace.",
+      "standing": "allow",
+      "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
+      "reversibility": "reversible",
+      "effects": ["data.write"]
+    },
+    {
+      "action": "git.push.feature",
+      "purpose": "Push an ordinary non-force feature branch.",
+      "standing": "allow",
+      "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
+      "reversibility": "compensatable",
+      "effects": ["git.remote.write"]
+    },
+    {
+      "action": "git.merge.accepted",
+      "purpose": "Merge work that has already been accepted by Lucy.",
+      "standing": "allow",
+      "requires": ["actor.merge_authority"],
+      "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
+      "reversibility": "compensatable",
+      "effects": ["git.repository.write"]
+    },
+    {
+      "action": "data.external_upload.repository",
+      "purpose": "Send repository or private project data to an external destination.",
+      "standing": "ask",
+      "scope": {"kind": "unrestricted"},
+      "reversibility": "irreversible",
+      "effects": ["data.external.disclose"]
+    },
+    {
+      "action": "data.external_upload.secret",
+      "purpose": "Send secret or credential material outside its intended boundary.",
+      "standing": "deny",
+      "scope": {"kind": "unrestricted"},
+      "reversibility": "irreversible",
+      "effects": ["data.external.disclose"]
+    },
+    {
+      "action": "git.history.rewrite",
+      "purpose": "Force-push or rewrite history on a shared/public Git ref.",
+      "standing": "ask",
+      "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
+      "reversibility": "irreversible",
+      "effects": ["git.history.rewrite"]
+    },
+    {
+      "action": "money.real_charge",
+      "purpose": "Create a real-money charge outside promotional credit.",
+      "standing": "ask",
+      "scope": {"kind": "unrestricted"},
+      "reversibility": "irreversible",
+      "effects": ["money.charge"]
+    },
+    {
+      "action": "money.promotional_credit.use",
+      "purpose": "Spend bounded promotional/free credit.",
+      "standing": "allow",
+      "requires": ["promo.within_budget"],
+      "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
+      "reversibility": "compensatable",
+      "effects": ["money.credit.use"]
+    },
+    {
+      "action": "identity.public_publish",
+      "purpose": "Publish content publicly as Matthew.",
+      "standing": "ask",
+      "scope": {"kind": "unrestricted"},
+      "reversibility": "irreversible",
+      "effects": ["identity.publish"]
+    }
+  ]
+}

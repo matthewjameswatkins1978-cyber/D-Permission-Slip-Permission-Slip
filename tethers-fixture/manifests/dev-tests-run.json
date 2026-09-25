@@ -1,0 +1,73 @@
+{
+  "manifest_format_version": "1.0",
+  "capability_name": "dev.tests.run",
+  "capability_version": 1,
+  "title": "Permission Slip fixture: dev.tests.run",
+  "description": "Run the project's automated test suite.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "additionalProperties": false
+  },
+  "effects": [
+    "compute.run"
+  ],
+  "permission_scope": {
+    "kind": "path_prefix",
+    "allowed_prefixes": [
+      "runtime/spike-workspace/"
+    ]
+  },
+  "reversibility": "reversible",
+  "determinism": "deterministic",
+  "idempotency": {
+    "mechanism": "argument_key",
+    "argument_name": "idempotency_key",
+    "key_source": "evaluation_id/action_id"
+  },
+  "confirmation_policy": {
+    "standing_permitted": true,
+    "per_call_required": false
+  },
+  "timeout_ms": 5000,
+  "retry_policy": {
+    "max_retries": 0,
+    "backoff_ms": 500,
+    "allowed_on": [
+      "outcome_unknown"
+    ],
+    "requires_idempotency_proof": false
+  },
+  "provider": {
+    "identity": "permission-slip-fixture",
+    "display_name": "Permission Slip Fixture",
+    "identity_source": "host_configuration",
+    "description": "Test-only deterministic stdio provider."
+  },
+  "binding": {
+    "kind": "mcp",
+    "server_name": "permission-slip-fixture",
+    "tool_name": "fixture_dev_tests_run",
+    "adapter": null
+  },
+  "digest": "sha256:a448c82d9d3c170ada4af2035b56b685d7671cabee7e4d0595cbfb0141381608"
+}

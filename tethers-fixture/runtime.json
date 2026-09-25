@@ -1,0 +1,492 @@
+{
+  "format_version": "0.1",
+  "tether_set": {
+    "id": "permission-slip.spike",
+    "version": "1",
+    "tethers": [
+      {
+        "id": "ps-dev-tests-run",
+        "version": "1",
+        "source_path": "tethers/dev-tests-run.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "dev.tests.run",
+              "capability_id": "cap.semantic.dev-tests-run",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "dev.tests.run"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-project-files-edit",
+        "version": "1",
+        "source_path": "tethers/project-files-edit.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "project.files.edit",
+              "capability_id": "cap.semantic.project-files-edit",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "project.files.edit"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-git-push-feature",
+        "version": "1",
+        "source_path": "tethers/git-push-feature.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "git.push.feature",
+              "capability_id": "cap.semantic.git-push-feature",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "git.push.feature"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-git-merge-accepted",
+        "version": "1",
+        "source_path": "tethers/git-merge-accepted.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "git.merge.accepted",
+              "capability_id": "cap.semantic.git-merge-accepted",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "git.merge.accepted"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            },
+            {
+              "source_name": "actor.merge_authority",
+              "fact_id": "fact.actor_merge_authority",
+              "host_snapshot_key": "actor.merge_authority",
+              "scalar_type": "boolean",
+              "schema_description": "trusted actor holds accepted-work merge authority"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-data-external-upload-repository",
+        "version": "1",
+        "source_path": "tethers/data-external-upload-repository.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "data.external_upload.repository",
+              "capability_id": "cap.semantic.data-external-upload-repository",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "data.external_upload.repository"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-data-external-upload-secret",
+        "version": "1",
+        "source_path": "tethers/data-external-upload-secret.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "data.external_upload.secret",
+              "capability_id": "cap.semantic.data-external-upload-secret",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "data.external_upload.secret"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-git-history-rewrite",
+        "version": "1",
+        "source_path": "tethers/git-history-rewrite.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "git.history.rewrite",
+              "capability_id": "cap.semantic.git-history-rewrite",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "git.history.rewrite"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-money-real-charge",
+        "version": "1",
+        "source_path": "tethers/money-real-charge.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "money.real_charge",
+              "capability_id": "cap.semantic.money-real-charge",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "money.real_charge"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-money-promotional-credit-use",
+        "version": "1",
+        "source_path": "tethers/money-promotional-credit-use.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "money.promotional_credit.use",
+              "capability_id": "cap.semantic.money-promotional-credit-use",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "money.promotional_credit.use"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            },
+            {
+              "source_name": "promo.within_budget",
+              "fact_id": "fact.promo_within_budget",
+              "host_snapshot_key": "promo.within_budget",
+              "scalar_type": "boolean",
+              "schema_description": "trusted charge is within the configured promotional bound"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ps-identity-public-publish",
+        "version": "1",
+        "source_path": "tethers/identity-public-publish.tether",
+        "core_environment": {
+          "program_id": "program.permission-slip.spike",
+          "core_version": "1",
+          "capabilities": [
+            {
+              "source_name": "identity.public_publish",
+              "capability_id": "cap.semantic.identity-public-publish",
+              "contract_digest": "CORE-CONTRACT-PERMISSION-SLIP-1",
+              "runtime_name": "identity.public_publish"
+            }
+          ],
+          "input_facts": [
+            {
+              "source_name": "actor.trusted",
+              "fact_id": "fact.actor_trusted",
+              "host_snapshot_key": "actor.trusted",
+              "scalar_type": "boolean",
+              "schema_description": "actor is supplied by the trusted harness profile"
+            }
+          ]
+        }
+      }
+    ],
+    "capability_requirements": [
+      {
+        "name": "dev.tests.run",
+        "version": 1,
+        "reason": "Run the project's automated test suite."
+      },
+      {
+        "name": "project.files.edit",
+        "version": 1,
+        "reason": "Edit a file inside the Permission Slip project workspace."
+      },
+      {
+        "name": "git.push.feature",
+        "version": 1,
+        "reason": "Push an ordinary non-force feature branch."
+      },
+      {
+        "name": "git.merge.accepted",
+        "version": 1,
+        "reason": "Merge work that has already been accepted by Lucy."
+      },
+      {
+        "name": "data.external_upload.repository",
+        "version": 1,
+        "reason": "Send repository or private project data to an external destination."
+      },
+      {
+        "name": "data.external_upload.secret",
+        "version": 1,
+        "reason": "Send secret or credential material outside its intended boundary."
+      },
+      {
+        "name": "git.history.rewrite",
+        "version": 1,
+        "reason": "Force-push or rewrite history on a shared/public Git ref."
+      },
+      {
+        "name": "money.real_charge",
+        "version": 1,
+        "reason": "Create a real-money charge outside promotional credit."
+      },
+      {
+        "name": "money.promotional_credit.use",
+        "version": 1,
+        "reason": "Spend bounded promotional/free credit."
+      },
+      {
+        "name": "identity.public_publish",
+        "version": 1,
+        "reason": "Publish content publicly as Matthew."
+      }
+    ]
+  },
+  "providers": [
+    {
+      "id": "permission-slip-fixture",
+      "display_name": "Permission Slip Fixture",
+      "transport": {
+        "kind": "stdio",
+        "command": "pwsh.exe",
+        "args": [
+          "-NoProfile",
+          "-File",
+          "providers/fixture.ps1"
+        ],
+        "protocol_version": "2025-11-25"
+      },
+      "capabilities": [
+        {
+          "name": "dev.tests.run",
+          "version": 1,
+          "manifest_path": "manifests/dev-tests-run.json",
+          "pinned_digest": "sha256:a448c82d9d3c170ada4af2035b56b685d7671cabee7e4d0595cbfb0141381608",
+          "scope_binding": {
+            "kind": "path_prefix",
+            "argument_json_pointer": "/path"
+          }
+        },
+        {
+          "name": "project.files.edit",
+          "version": 1,
+          "manifest_path": "manifests/project-files-edit.json",
+          "pinned_digest": "sha256:c48cf7aca3f4985a3bf0dfd2ffbafae3d12d4a9dd226c05dce8969c3aedb2d3b",
+          "scope_binding": {
+            "kind": "path_prefix",
+            "argument_json_pointer": "/path"
+          }
+        },
+        {
+          "name": "git.push.feature",
+          "version": 1,
+          "manifest_path": "manifests/git-push-feature.json",
+          "pinned_digest": "sha256:e9b0a86625b7bda9b2594a18af72454d4faeb2c13520f3cf1533902c8d3cbcb2",
+          "scope_binding": {
+            "kind": "path_prefix",
+            "argument_json_pointer": "/repository"
+          }
+        },
+        {
+          "name": "git.merge.accepted",
+          "version": 1,
+          "manifest_path": "manifests/git-merge-accepted.json",
+          "pinned_digest": "sha256:578db244f77c4122b134403116f4c62f9139cf57a0b5ae58b6860c719d889095",
+          "scope_binding": {
+            "kind": "path_prefix",
+            "argument_json_pointer": "/repository"
+          }
+        },
+        {
+          "name": "data.external_upload.repository",
+          "version": 1,
+          "manifest_path": "manifests/data-external-upload-repository.json",
+          "pinned_digest": "sha256:515ea3d126b6d49d324ec610136b5b035129a2f18d446d15dd63e88608792451"
+        },
+        {
+          "name": "data.external_upload.secret",
+          "version": 1,
+          "manifest_path": "manifests/data-external-upload-secret.json",
+          "pinned_digest": "sha256:e6288a7939ccebe2a03f07e4ffbaac3325aeb4b740f371ddedb79398c85f71c7"
+        },
+        {
+          "name": "git.history.rewrite",
+          "version": 1,
+          "manifest_path": "manifests/git-history-rewrite.json",
+          "pinned_digest": "sha256:81de1ef62e94fd29c25b3d74750f062e3b03ac830f5b46f9252de753d70485f5",
+          "scope_binding": {
+            "kind": "path_prefix",
+            "argument_json_pointer": "/repository"
+          }
+        },
+        {
+          "name": "money.real_charge",
+          "version": 1,
+          "manifest_path": "manifests/money-real-charge.json",
+          "pinned_digest": "sha256:0e668bd32d44267f7f9b41355681d5ca720838f9516f6a5587e94b3310728d35"
+        },
+        {
+          "name": "money.promotional_credit.use",
+          "version": 1,
+          "manifest_path": "manifests/money-promotional-credit-use.json",
+          "pinned_digest": "sha256:658f84304fd5ece2448427968ba7b912c1dadba78d8fdce7f5ac666376371e99",
+          "scope_binding": {
+            "kind": "path_prefix",
+            "argument_json_pointer": "/path"
+          }
+        },
+        {
+          "name": "identity.public_publish",
+          "version": 1,
+          "manifest_path": "manifests/identity-public-publish.json",
+          "pinned_digest": "sha256:982009eebfd7b7bc990cdb6ff3f6f5477d56a572627c3c8e982ecaed8f8f9dea"
+        }
+      ]
+    }
+  ],
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "name": "dev.tests.run",
+        "version": 1,
+        "decision": "allow"
+      },
+      {
+        "name": "project.files.edit",
+        "version": 1,
+        "decision": "allow"
+      },
+      {
+        "name": "git.push.feature",
+        "version": 1,
+        "decision": "allow"
+      },
+      {
+        "name": "git.merge.accepted",
+        "version": 1,
+        "decision": "allow"
+      },
+      {
+        "name": "data.external_upload.repository",
+        "version": 1,
+        "decision": "ask"
+      },
+      {
+        "name": "data.external_upload.secret",
+        "version": 1,
+        "decision": "deny"
+      },
+      {
+        "name": "git.history.rewrite",
+        "version": 1,
+        "decision": "ask"
+      },
+      {
+        "name": "money.real_charge",
+        "version": 1,
+        "decision": "ask"
+      },
+      {
+        "name": "money.promotional_credit.use",
+        "version": 1,
+        "decision": "allow"
+      },
+      {
+        "name": "identity.public_publish",
+        "version": 1,
+        "decision": "ask"
+      }
+    ]
+  }
+}

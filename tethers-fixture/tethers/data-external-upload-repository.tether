@@ -1,0 +1,11 @@
+tether "permission slip data.external_upload.repository"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+
+do
+    data.external_upload.repository
+        destination: anchor.destination

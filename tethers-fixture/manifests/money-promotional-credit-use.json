@@ -1,0 +1,81 @@
+{
+  "manifest_format_version": "1.0",
+  "capability_name": "money.promotional_credit.use",
+  "capability_version": 1,
+  "title": "Permission Slip fixture: money.promotional_credit.use",
+  "description": "Spend bounded promotional/free credit.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "amount_cents": {
+        "type": "integer"
+      },
+      "vendor": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "amount_cents",
+      "vendor",
+      "path"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "additionalProperties": false
+  },
+  "effects": [
+    "money.credit.use"
+  ],
+  "permission_scope": {
+    "kind": "path_prefix",
+    "allowed_prefixes": [
+      "runtime/spike-workspace/"
+    ]
+  },
+  "reversibility": "compensatable",
+  "determinism": "deterministic",
+  "idempotency": {
+    "mechanism": "argument_key",
+    "argument_name": "idempotency_key",
+    "key_source": "evaluation_id/action_id"
+  },
+  "confirmation_policy": {
+    "standing_permitted": true,
+    "per_call_required": false
+  },
+  "timeout_ms": 5000,
+  "retry_policy": {
+    "max_retries": 0,
+    "backoff_ms": 500,
+    "allowed_on": [
+      "outcome_unknown"
+    ],
+    "requires_idempotency_proof": false
+  },
+  "provider": {
+    "identity": "permission-slip-fixture",
+    "display_name": "Permission Slip Fixture",
+    "identity_source": "host_configuration",
+    "description": "Test-only deterministic stdio provider."
+  },
+  "binding": {
+    "kind": "mcp",
+    "server_name": "permission-slip-fixture",
+    "tool_name": "fixture_money_promotional_credit_use",
+    "adapter": null
+  },
+  "digest": "sha256:658f84304fd5ece2448427968ba7b912c1dadba78d8fdce7f5ac666376371e99"
+}

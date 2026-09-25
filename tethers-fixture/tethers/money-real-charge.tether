@@ -1,0 +1,12 @@
+tether "permission slip money.real_charge"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+
+do
+    money.real_charge
+        amount_cents: anchor.amount_cents
+        vendor: anchor.vendor

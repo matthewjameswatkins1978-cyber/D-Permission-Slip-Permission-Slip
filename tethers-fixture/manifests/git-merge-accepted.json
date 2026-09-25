@@ -1,0 +1,73 @@
+{
+  "manifest_format_version": "1.0",
+  "capability_name": "git.merge.accepted",
+  "capability_version": 1,
+  "title": "Permission Slip fixture: git.merge.accepted",
+  "description": "Merge work that has already been accepted by Lucy.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "repository": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "repository"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "additionalProperties": false
+  },
+  "effects": [
+    "git.repository.write"
+  ],
+  "permission_scope": {
+    "kind": "path_prefix",
+    "allowed_prefixes": [
+      "runtime/spike-workspace/"
+    ]
+  },
+  "reversibility": "compensatable",
+  "determinism": "deterministic",
+  "idempotency": {
+    "mechanism": "argument_key",
+    "argument_name": "idempotency_key",
+    "key_source": "evaluation_id/action_id"
+  },
+  "confirmation_policy": {
+    "standing_permitted": true,
+    "per_call_required": false
+  },
+  "timeout_ms": 5000,
+  "retry_policy": {
+    "max_retries": 0,
+    "backoff_ms": 500,
+    "allowed_on": [
+      "outcome_unknown"
+    ],
+    "requires_idempotency_proof": false
+  },
+  "provider": {
+    "identity": "permission-slip-fixture",
+    "display_name": "Permission Slip Fixture",
+    "identity_source": "host_configuration",
+    "description": "Test-only deterministic stdio provider."
+  },
+  "binding": {
+    "kind": "mcp",
+    "server_name": "permission-slip-fixture",
+    "tool_name": "fixture_git_merge_accepted",
+    "adapter": null
+  },
+  "digest": "sha256:578db244f77c4122b134403116f4c62f9139cf57a0b5ae58b6860c719d889095"
+}

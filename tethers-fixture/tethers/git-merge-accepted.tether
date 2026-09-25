@@ -1,0 +1,12 @@
+tether "permission slip git.merge.accepted"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+    and actor.merge_authority is true
+
+do
+    git.merge.accepted
+        repository: anchor.repository

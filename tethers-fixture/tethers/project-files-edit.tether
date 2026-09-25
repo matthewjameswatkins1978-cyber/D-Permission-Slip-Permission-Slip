@@ -1,0 +1,11 @@
+tether "permission slip project.files.edit"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+
+do
+    project.files.edit
+        path: anchor.path
