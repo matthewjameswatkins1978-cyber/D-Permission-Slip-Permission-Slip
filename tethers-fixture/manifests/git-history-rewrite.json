@@ -9,10 +9,22 @@
     "properties": {
       "repository": {
         "type": "string"
+      },
+      "remote_repository": {
+        "type": "string"
+      },
+      "destination_ref": {
+        "type": "string"
+      },
+      "push_effect": {
+        "type": "string"
       }
     },
     "required": [
-      "repository"
+      "repository",
+      "remote_repository",
+      "destination_ref",
+      "push_effect"
     ],
     "additionalProperties": false
   },
@@ -69,5 +81,5 @@
     "tool_name": "fixture_git_history_rewrite",
     "adapter": null
   },
-  "digest": "sha256:81de1ef62e94fd29c25b3d74750f062e3b03ac830f5b46f9252de753d70485f5"
+  "digest": "sha256:768229507a6a6281df52e5c561b549fff6789a00a6f156f4153a83632479a15d"
 }

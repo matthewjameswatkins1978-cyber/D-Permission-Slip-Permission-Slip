@@ -9,10 +9,22 @@
     "properties": {
       "repository": {
         "type": "string"
+      },
+      "remote_repository": {
+        "type": "string"
+      },
+      "destination_ref": {
+        "type": "string"
+      },
+      "push_effect": {
+        "type": "string"
       }
     },
     "required": [
-      "repository"
+      "repository",
+      "remote_repository",
+      "destination_ref",
+      "push_effect"
     ],
     "additionalProperties": false
   },
@@ -69,5 +81,5 @@
     "tool_name": "fixture_git_push_feature",
     "adapter": null
   },
-  "digest": "sha256:e9b0a86625b7bda9b2594a18af72454d4faeb2c13520f3cf1533902c8d3cbcb2"
+  "digest": "sha256:1a51194ead12a011d81b12e09c33376f48d271caa992371a21066a2aaaa39686"
 }

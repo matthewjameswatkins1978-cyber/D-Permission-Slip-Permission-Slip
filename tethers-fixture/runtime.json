@@ -371,7 +371,7 @@
           "name": "git.push.feature",
           "version": 1,
           "manifest_path": "manifests/git-push-feature.json",
-          "pinned_digest": "sha256:e9b0a86625b7bda9b2594a18af72454d4faeb2c13520f3cf1533902c8d3cbcb2",
+          "pinned_digest": "sha256:1a51194ead12a011d81b12e09c33376f48d271caa992371a21066a2aaaa39686",
           "scope_binding": {
             "kind": "path_prefix",
             "argument_json_pointer": "/repository"
@@ -403,7 +403,7 @@
           "name": "git.history.rewrite",
           "version": 1,
           "manifest_path": "manifests/git-history-rewrite.json",
-          "pinned_digest": "sha256:81de1ef62e94fd29c25b3d74750f062e3b03ac830f5b46f9252de753d70485f5",
+          "pinned_digest": "sha256:768229507a6a6281df52e5c561b549fff6789a00a6f156f4153a83632479a15d",
           "scope_binding": {
             "kind": "path_prefix",
             "argument_json_pointer": "/repository"

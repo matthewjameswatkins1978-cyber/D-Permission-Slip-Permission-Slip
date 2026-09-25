@@ -63,7 +63,8 @@ Layout:
 | `permission_slip/executor.py` | Safe fixture external executor |
 | `permission_slip/spike.py` | Vertical orchestration |
 | `tethers-fixture/` | Compiled inspectable Tethers runtime/config fixtures |
-| `tests/` | The 20-case end-to-end matrix + adapter/pinning tests |
+| `tests/` | The 26-case end-to-end matrix + adapter/pinning tests |
+| `tests/support.py` | Temporary Git repositories with controlled remotes (no network) |
 | `scripts/` | Toolchain bootstrap and spike runner |
 
 ## Trust boundary
@@ -80,11 +81,25 @@ derives authority-relevant facts **from the actual operation**:
   `+feature`, `--force-with-lease=...`, deletions) are recognised; an
   ambiguous push **fails closed** and never becomes `git.push.feature`;
 - `git.push.feature` is granted on **positive evidence only**: the single
-  unambiguous destination must sit inside the `feature/*` namespace and the
-  push must carry no force semantics. A destination that is merely unknown
-  (`production`, `stable`, `gh-pages`, `arbitrary-name`, ...) is *not*
-  evidence, is not silently re-described as a history rewrite, and fails
-  closed as unmappable → `DENY`;
+  unambiguous destination must sit inside the `feature/*` namespace, the push
+  must carry no force semantics, **and the actual push remote must resolve —
+  from trusted local Git configuration — to the doctrine's canonical
+  repository**. A destination that is merely unknown (`production`, `stable`,
+  `gh-pages`, `arbitrary-name`, ...) is *not* evidence, is not silently
+  re-described as a history rewrite, and fails closed as unmappable → `DENY`;
+- the remote *alias* is caller content and is never trusted by name. The
+  adapter runs `git -C <repo> remote get-url --push <alias>` (local config
+  only, no network) and compares the resolved URL against
+  `project.canonical_repository`, normalising the small set of equivalent
+  GitHub transport forms to `github.com/owner/repo`. Caller-supplied
+  `remote_url` / `repository_url` / `canonical_remote` / `approved_remote`
+  fields are forbidden keys and are never read;
+- Git push actions are bound **inside Tethers** to the exact remote/ref effect:
+  `git.push.feature` and `git.history.rewrite` carry `remote_repository`,
+  `destination_ref` and `push_effect` as Tether action arguments, so two
+  materially different pushes (e.g. `force:refs/heads/main` vs
+  `force:refs/heads/release`) receive different Tethers `argument_digest`s and
+  cannot share one approval;
 - external destination comes from the actual target;
 - secret material takes precedence over ordinary repository upload;
 - monetary amount/source comes from the trusted payment fields, and a
@@ -168,6 +183,13 @@ SHA exercised. To provision a fresh pinned Tethers checkout into `.deps/`
   push to a branch outside it is unmappable in v0.1 and fails closed rather
   than being given standing authority or a mislabelled capability. A general
   branch taxonomy / `git.push.other` capability is deliberately not built.
+- Remote identity normalisation is deliberately GitHub-only and covers just
+  the four transport forms that are proven equivalent for this repository.
+  Any other host, scheme, port, path shape or malformed URL fails closed as
+  unmappable. There is no generic forge-URL framework and no remote policy
+  language.
+- `git merge` still binds only the local `repository` argument: it is not a
+  remote/ref push effect, so Packet 1C does not extend its action identity.
 
 ## Origin
 

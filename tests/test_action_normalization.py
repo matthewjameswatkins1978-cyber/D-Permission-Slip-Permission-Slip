@@ -7,6 +7,7 @@ trusted normalization establishes what the operation actually does.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -17,11 +18,22 @@ from permission_slip.actions import (
     ActionAdapter,
     ActionAdapterError,
     UntrustedActorError,
+    canonical_repository_identity,
     classify_push_refspec,
     feature_branch_destination,
     parse_push,
 )
 from permission_slip.doctrine import load_doctrine
+from tests.support import (
+    CANONICAL_IDENTITY,
+    CANONICAL_REPOSITORY,
+    EVIL_REMOTE_URL,
+    OTHER_GITHUB_REMOTE_URL,
+    add_remote,
+    init_git_repo,
+    set_push_url,
+    set_remote_url,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 DOCTRINE = load_doctrine(REPO / "doctrine" / "matthew.v0.1.json")
@@ -31,6 +43,18 @@ PROVIDER = DOCTRINE["boundaries"]["promotional_credit"]["provider"]
 
 def git(*args: str, **extra) -> dict:
     return {"tool": "git", "argv": list(args), **extra}
+
+
+def action_digest(normalized) -> str:
+    """Deterministic digest of the Tethers action input.
+
+    ``event.data`` sent to PREPARE is exactly ``normalized.arguments``, so this
+    is the identity Tethers binds an approval to.
+    """
+    payload = json.dumps(
+        normalized.arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class ActorIdentityTests(unittest.TestCase):
@@ -70,6 +94,7 @@ class GitPushClassificationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        init_git_repo(self.tmp.name)
         self.adapter = ActionAdapter(DOCTRINE, repo_root=self.tmp.name)
 
     def classify(self, *args: str) -> str:
@@ -379,10 +404,205 @@ class PromotionalCreditBoundTests(unittest.TestCase):
         self.assertEqual(capability["requires"], ["promo.within_bound"])
 
 
+class PushRemoteBindingTests(unittest.TestCase):
+    """The push destination must be proven from trusted repository state."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        init_git_repo(self.repo, remotes={"evil-remote": EVIL_REMOTE_URL})
+        # A second remote on the correct host but a different repository.
+        add_remote(self.repo, "other", OTHER_GITHUB_REMOTE_URL)
+        self.adapter = ActionAdapter(DOCTRINE, repo_root=self.repo)
+
+    def push(self, *args: str, **extra):
+        return self.adapter.normalize(
+            {"tool": "git", "argv": ["push", *args], **extra}, actor_id="worker-agent"
+        )
+
+    def assert_unmappable(self, *args: str, **extra) -> None:
+        with self.assertRaises(ActionAdapterError):
+            self.push(*args, **extra)
+
+    # -- canonical remote allow --------------------------------------------
+
+    def test_canonical_remote_receives_standing_feature_authority(self):
+        result = self.push("origin", "feature/foo")
+        self.assertEqual(result.action, "git.push.feature")
+        self.assertEqual(result.arguments["remote_repository"], CANONICAL_IDENTITY)
+        self.assertEqual(result.arguments["destination_ref"], "refs/heads/feature/foo")
+        self.assertEqual(result.arguments["push_effect"], "push:refs/heads/feature/foo")
+        self.assertEqual(result.arguments["repository"], "runtime/spike-workspace/repos/permission-slip")
+
+    def test_equivalent_canonical_url_forms_normalise_identically(self):
+        forms = (
+            "https://github.com/matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip",
+            "https://github.com/matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip.git",
+            "https://github.com/matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip/",
+            "git@github.com:matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip.git",
+            "ssh://git@github.com/matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip.git",
+            "HTTPS://GitHub.com/MatthewJamesWatkins1978-Cyber/D-Permission-Slip-Permission-Slip.GIT",
+            "https://github.com/matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip.git/",
+        )
+        for form in forms:
+            with self.subTest(form=form):
+                self.assertEqual(canonical_repository_identity(form), CANONICAL_IDENTITY)
+
+    def test_unrecognised_url_forms_do_not_normalise(self):
+        for form in (
+            None,
+            "",
+            "origin",
+            "git://github.com/owner/repo.git",
+            "http://github.com/owner/repo.git",
+            "https://gitlab.com/owner/repo.git",
+            "https://github.com/owner",
+            "https://github.com/owner/repo/extra",
+            "github.com/owner/repo",
+            "someone-else:owner/repo.git",
+            "https://github.com:8443/owner/repo.git",
+            "ssh://git@github.com:2222/owner/repo.git",
+            "https://github.com/owner/repo?tab=readme-ovh",
+            "https://github.com/owner/repo#section",
+            "/local/path/repo",
+            "C:\\local\\repo",
+        ):
+            with self.subTest(form=form):
+                self.assertIsNone(canonical_repository_identity(form))
+
+    # -- wrong / unknown remote --------------------------------------------
+
+    def test_wrong_remote_is_unmappable(self):
+        self.assert_unmappable("evil-remote", "feature/foo")
+
+    def test_other_github_repository_is_unmappable(self):
+        self.assert_unmappable("other", "feature/foo")
+
+    def test_missing_remote_is_unmappable(self):
+        self.assert_unmappable("missing-alias", "feature/foo")
+
+    def test_wrong_remote_is_unmappable_even_when_force_consequential(self):
+        # An unfamiliar remote must not be re-described as a history rewrite
+        # merely to obtain ASK.
+        self.assert_unmappable("--force", "evil-remote", "main")
+        self.assert_unmappable("--force", "other", "main")
+
+    def test_non_repository_directory_cannot_establish_a_remote(self):
+        plain = tempfile.TemporaryDirectory()
+        self.addCleanup(plain.cleanup)
+        adapter = ActionAdapter(DOCTRINE, repo_root=plain.name)
+        with self.assertRaises(ActionAdapterError):
+            adapter.normalize(
+                {"tool": "git", "argv": ["push", "origin", "feature/foo"]},
+                actor_id="worker-agent",
+            )
+
+    # -- direct URL targets -------------------------------------------------
+
+    def test_direct_canonical_url_receives_standing_authority(self):
+        for target in (
+            CANONICAL_REPOSITORY,
+            CANONICAL_REPOSITORY + ".git",
+            "git@github.com:matthewjameswatkins1978-cyber/D-Permission-Slip-Permission-Slip.git",
+        ):
+            with self.subTest(target=target):
+                result = self.push(target, "feature/foo")
+                self.assertEqual(result.action, "git.push.feature")
+                self.assertEqual(result.arguments["remote_repository"], CANONICAL_IDENTITY)
+
+    def test_direct_unknown_url_is_unmappable(self):
+        self.assert_unmappable("https://evil.example/x.git", "feature/foo")
+
+    # -- force / consequential binding -------------------------------------
+
+    def test_force_canonical_remote_binds_remote_and_effect(self):
+        result = self.push("--force", "origin", "main")
+        self.assertEqual(result.action, "git.history.rewrite")
+        self.assertEqual(result.arguments["remote_repository"], CANONICAL_IDENTITY)
+        self.assertEqual(result.arguments["destination_ref"], "refs/heads/main")
+        self.assertEqual(result.arguments["push_effect"], "force:refs/heads/main")
+
+    def test_distinct_destination_refs_produce_distinct_bound_inputs(self):
+        main = self.push("--force", "origin", "main")
+        release = self.push("--force", "origin", "release")
+        self.assertEqual(main.action, "git.history.rewrite")
+        self.assertEqual(release.action, "git.history.rewrite")
+        self.assertNotEqual(main.arguments["push_effect"], release.arguments["push_effect"])
+        self.assertNotEqual(main.arguments["destination_ref"], release.arguments["destination_ref"])
+        self.assertNotEqual(action_digest(main), action_digest(release))
+
+    def test_destructive_and_protected_effects_are_distinguished(self):
+        protected = self.push("origin", "main")
+        deletion = self.push("origin", ":main")
+        wildcard = self.push("origin", "feature/*")
+        self.assertEqual(protected.arguments["push_effect"], "push:refs/heads/main")
+        self.assertEqual(deletion.arguments["push_effect"], "delete:refs/heads/main")
+        self.assertEqual(wildcard.arguments["push_effect"], "push:feature/*")
+        self.assertEqual(len({action_digest(protected), action_digest(deletion), action_digest(wildcard)}), 3)
+
+    # -- caller spoofing ----------------------------------------------------
+
+    def test_caller_remote_metadata_is_ignored(self):
+        operation = {
+            "tool": "git",
+            "argv": ["push", "evil-remote", "feature/foo"],
+            "remote_url": CANONICAL_REPOSITORY,
+            "repository_url": CANONICAL_REPOSITORY,
+            "canonical_remote": CANONICAL_IDENTITY,
+            "approved_remote": CANONICAL_IDENTITY,
+        }
+        with self.assertRaises(ActionAdapterError):
+            self.adapter.normalize(operation, actor_id="worker-agent")
+
+    def test_origin_is_a_label_not_a_trusted_name(self):
+        # Follows the *current* trusted Git configuration.
+        result = self.push("origin", "feature/foo")
+        self.assertEqual(result.action, "git.push.feature")
+
+        set_remote_url(self.repo, "origin", OTHER_GITHUB_REMOTE_URL)
+        self.assert_unmappable("origin", "feature/foo")
+        self.assert_unmappable("--force", "origin", "main")
+
+        set_remote_url(self.repo, "origin", CANONICAL_REPOSITORY)
+        self.assertEqual(self.push("origin", "feature/foo").action, "git.push.feature")
+
+    def test_push_url_is_followed_rather_than_the_fetch_url(self):
+        # The push destination is what ``--push`` reports; retargeting only the
+        # push URL must be enough to remove standing authority.
+        self.assertEqual(self.push("origin", "feature/foo").action, "git.push.feature")
+
+        set_push_url(self.repo, "origin", EVIL_REMOTE_URL)
+        self.assert_unmappable("origin", "feature/foo")
+
+        set_push_url(self.repo, "origin", CANONICAL_REPOSITORY)
+        self.assertEqual(self.push("origin", "feature/foo").action, "git.push.feature")
+
+    # -- doctrine fail-closed ----------------------------------------------
+
+    def test_doctrine_without_canonical_repository_fails_closed(self):
+        broken = json.loads(json.dumps(DOCTRINE))
+        broken["project"]["canonical_repository"] = "not-a-repository"
+        with self.assertRaises(ActionAdapterError):
+            ActionAdapter(broken, repo_root=self.repo)
+
+    # -- parser contract ----------------------------------------------------
+
+    def test_parse_push_reports_remote_and_deletion(self):
+        parsed = parse_push(["origin", "feature/foo"])
+        self.assertEqual(parsed["remote"], "origin")
+        self.assertFalse(parsed["delete"])
+        self.assertTrue(parse_push(["origin", ":main"])["delete"])
+        self.assertTrue(parse_push(["origin", "--delete", "main"])["delete"])
+        self.assertTrue(parse_push(["-d", "origin", "main"])["delete"])
+        self.assertIsNone(parse_push([])["remote"])
+
+
 class OtherNormalisationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        init_git_repo(self.tmp.name)
         self.adapter = ActionAdapter(DOCTRINE, repo_root=self.tmp.name)
 
     def normalize(self, operation: dict, actor_id: str = "worker-agent"):

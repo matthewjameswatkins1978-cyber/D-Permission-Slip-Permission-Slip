@@ -57,13 +57,19 @@ def explain(normalized: NormalizedAction) -> dict[str, Any]:
     elif action == "git.history.rewrite":
         what = (
             "This would rewrite public Git history for "
-            f"{args.get('repository', 'the repository')}."
+            f"{args.get('remote_repository', 'the repository')}"
+            + (
+                f" at {args.get('destination_ref')}"
+                if args.get("destination_ref")
+                else ""
+            )
+            + "."
         )
         why = (
             "Existing commit references may disappear and other checkouts can "
             "diverge."
         )
-        changes = "Allowing this permits this exact history rewrite once."
+        changes = "Allowing this permits this exact push to this exact ref once."
 
     elif action == "money.real_charge":
         what = (
@@ -109,12 +115,16 @@ def explain(normalized: NormalizedAction) -> dict[str, Any]:
         changes = "Allowing this makes this exact edit once."
 
     elif action == "git.push.feature":
-        what = "This worker is about to push an ordinary feature branch."
-        why = (
-            "The destination is positively inside the feature/* namespace and the "
-            "push is non-force, so it does not rewrite shared history."
+        what = (
+            "This worker is about to push an ordinary feature branch to "
+            f"{args.get('remote_repository', 'the project repository')}."
         )
-        changes = "Allowing this pushes this feature branch once."
+        why = (
+            "The destination is positively inside the feature/* namespace, the "
+            "remote resolves to the canonical project repository, and the push "
+            "is non-force, so it does not rewrite shared history."
+        )
+        changes = "Allowing this pushes this feature branch to that remote once."
 
     elif action == "git.merge.accepted":
         what = "This worker is about to merge accepted work."

@@ -29,11 +29,16 @@ here; it prepares the exact input Tethers will decide on.
 from __future__ import annotations
 
 import os
+import re
+import subprocess
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
 # Keys a caller might use to try to manufacture authority or identity. They are
-# never read. ``actor`` is included: identity is not caller-selectable.
+# never read. ``actor`` is included: identity is not caller-selectable, and the
+# ``*_remote``/``*_url`` keys are included: push destination is resolved from
+# trusted repository state, never claimed by content.
 FORBIDDEN_CALLER_KEYS = (
     "actor",
     "permission",
@@ -50,6 +55,10 @@ FORBIDDEN_CALLER_KEYS = (
     "action",
     "capability",
     "decision",
+    "remote_url",
+    "repository_url",
+    "canonical_remote",
+    "approved_remote",
 )
 
 PROTECTED_BRANCHES = {"main", "master", "trunk", "release"}
@@ -155,6 +164,110 @@ def _strip_heads(ref: str) -> str:
     return ref[len(prefix):] if ref.startswith(prefix) else ref
 
 
+# SCP-style remote syntax: ``git@github.com:OWNER/REPO.git``.
+_SCP_REMOTE = re.compile(r"^[^@\s]+@([^:\s]+):(.+)$")
+
+# This spike's canonical repository is GitHub. Only these transport forms are
+# proven equivalent; anything else fails closed rather than being guessed at.
+_CANONICAL_SCHEMES = frozenset({"https", "ssh"})
+
+
+def canonical_repository_identity(target: Any) -> str | None:
+    """Normalise a repository URL to a deterministic ``github.com/owner/repo``.
+
+    Supported equivalent forms (the set actually useful to this spike):
+
+    * ``https://github.com/OWNER/REPO``
+    * ``https://github.com/OWNER/REPO.git``
+    * ``git@github.com:OWNER/REPO.git``
+    * ``ssh://git@github.com/OWNER/REPO.git``
+
+    Unknown hosts, transports or path shapes return ``None``: they cannot be
+    proven equivalent to the canonical repository, so they must fail closed.
+    This is deliberately not a generic forge-URL framework.
+    """
+    if not isinstance(target, str):
+        return None
+    value = target.strip()
+    if not value:
+        return None
+
+    if "://" in value:
+        parsed = urllib.parse.urlparse(value)
+        if parsed.scheme not in _CANONICAL_SCHEMES:
+            return None
+        if parsed.query or parsed.fragment:
+            return None
+        # An explicit non-default port can denote a different server entirely.
+        port = parsed.port
+        if port is not None and port != {"https": 443, "ssh": 22}[parsed.scheme]:
+            return None
+        host, path = parsed.hostname, parsed.path
+    else:
+        match = _SCP_REMOTE.match(value)
+        if not match:
+            return None
+        host, path = match.group(1), match.group(2)
+
+    if not host or not path:
+        return None
+    if host.lower() != "github.com":
+        return None
+
+    path = path.strip("/")
+    if path.lower().endswith(".git"):
+        path = path[: -len(".git")].strip("/")
+    if not path:
+        return None
+    segments = [segment for segment in path.split("/") if segment]
+    if len(segments) != 2:
+        return None
+    owner, repository = segments
+    if not owner or not repository:
+        return None
+    return f"github.com/{owner}/{repository}".lower()
+
+
+def _refspec_is_deletion(refspec: str) -> bool:
+    body = refspec[1:] if refspec.startswith("+") else refspec
+    if ":" not in body:
+        return False
+    source, destination = body.split(":", 1)
+    return source == "" or destination == ""
+
+
+def _refspec_destination_ref(refspec: str) -> str:
+    """The destination ref a single refspec would write on the remote."""
+    body = refspec[1:] if refspec.startswith("+") else refspec
+    destination = body.split(":", 1)[1] if ":" in body else body
+    if not destination or destination in ("HEAD", "@") or "*" in destination:
+        return ""
+    if destination.startswith("refs/"):
+        return destination
+    return f"refs/heads/{destination}"
+
+
+def _destination_ref(label: str | None) -> str:
+    if not label:
+        return ""
+    return label if label.startswith("refs/") else f"refs/heads/{label}"
+
+
+def _push_effect(kind: str, destination_ref: str, refspecs: list[str]) -> str:
+    """Deterministic encoding of the remote effect a push has.
+
+    Two materially different remote effects must never collapse to the same
+    string (and therefore the same Tethers-bound action input).
+    """
+    if destination_ref:
+        payload = destination_ref
+    elif refspecs:
+        payload = ",".join(refspecs)
+    else:
+        payload = "unspecified"
+    return f"{kind}:{payload}"
+
+
 def classify_push_refspec(refspec: str) -> tuple[bool, str | None]:
     """Classify one push refspec.
 
@@ -239,16 +352,18 @@ def feature_branch_destination(label: str | None) -> str | None:
 def parse_push(args: list[str]) -> dict[str, Any]:
     """Parse ``git push`` arguments (excluding the subcommand).
 
-    Returns ``{"force": bool, "broad": bool, "refspecs": [...], "ambiguous":
-    bool}``.
+    Returns ``{"remote": str | None, "force": bool, "broad": bool, "delete":
+    bool, "refspecs": [...], "ambiguous": bool}``.
 
-    ``ambiguous`` is true when the push is not *positively* established as a
-    single ordinary refspec with every token recognised. That includes an
-    unrecognised push option: standing feature authority is granted only on
-    positive evidence, never because nothing dangerous was spotted.
+    ``remote`` is the push destination token exactly as it appears in the
+    command; it is caller content and proves nothing on its own. ``ambiguous``
+    is true when the push is not *positively* established as a single ordinary
+    refspec with every token recognised. Standing feature authority is granted
+    only on positive evidence, never because nothing dangerous was spotted.
     """
     force = False
     broad = False
+    delete = False
     unrecognised = False
     positionals: list[str] = []
     index = 0
@@ -266,6 +381,7 @@ def parse_push(args: list[str]) -> dict[str, Any]:
                     force = True
                 elif name in _BROAD_PUSH_FLAGS:
                     broad = True
+                    delete = delete or name == "--delete"
                 elif name in _RETARGET_PUSH_OPTIONS:
                     if not separator:
                         index += 1  # consume the option's value
@@ -290,15 +406,27 @@ def parse_push(args: list[str]) -> dict[str, Any]:
                         force = True  # covers combined short flags such as ``-fu``
                     if "d" in cluster:
                         broad = True
+                        delete = True
             index += 1
             continue
         positionals.append(token)
         index += 1
 
-    # First positional (when two or more exist) is the repository.
+    # The first positional is the push destination (remote alias or URL); the
+    # rest are refspecs. Both are caller content: the alias is only resolved
+    # against trusted repository state later.
+    remote = positionals[0] if positionals else None
     refspecs = positionals[1:] if len(positionals) >= 2 else []
     ambiguous = len(refspecs) != 1 or unrecognised
-    return {"force": force, "broad": broad, "refspecs": refspecs, "ambiguous": ambiguous}
+    delete = delete or any(_refspec_is_deletion(refspec) for refspec in refspecs)
+    return {
+        "remote": remote,
+        "force": force,
+        "broad": broad,
+        "delete": delete,
+        "refspecs": refspecs,
+        "ambiguous": ambiguous,
+    }
 
 
 class ActionAdapter:
@@ -307,6 +435,17 @@ class ActionAdapter:
         self.repo_root = os.path.realpath(repo_root or os.getcwd())
         project = doctrine.get("project", {})
         self.root_scope = project.get("root_scope", "runtime/spike-workspace/")
+        # The one repository a push is authorised to reach. A doctrine that
+        # cannot name it cannot support push authority at all, so fail closed
+        # at construction rather than silently allowing nothing-or-everything.
+        self.canonical_repository_identity = canonical_repository_identity(
+            project.get("canonical_repository", "")
+        )
+        if not self.canonical_repository_identity:
+            raise ActionAdapterError(
+                "doctrine project.canonical_repository is not a canonical GitHub "
+                "repository URL"
+            )
         credit = doctrine.get("boundaries", {}).get("promotional_credit", {})
         # v0.1 enforces a *per-call* limit only. There is no cumulative ledger
         # and this value must never be described as an overall budget.
@@ -375,6 +514,59 @@ class ActionAdapter:
             # Different drive on Windows: preserve the absolute form.
             return resolved.replace("\\", "/")
 
+    def _resolve_push_remote(self, remote: Any) -> str:
+        """Resolve a ``git push`` destination from trusted local Git state.
+
+        ``remote`` is caller content: it is only part of the actual command.
+        What it *points at* is read from the repository's own configuration via
+        a non-networking Git query, and must equal the doctrine's canonical
+        repository. Caller-supplied ``remote_url`` / ``repository_url`` /
+        ``canonical_remote`` / ``approved_remote`` style fields are never
+        consulted.
+
+        No network access is used: ``git remote get-url --push`` reads local
+        configuration only.
+        """
+        if not isinstance(remote, str) or not remote or remote.startswith("-"):
+            raise ActionAdapterError("git push destination could not be established")
+
+        resolved = remote
+        try:
+            completed = subprocess.run(
+                ["git", "-C", self.repo_root, "remote", "get-url", "--push", remote],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ActionAdapterError(
+                f"git remote resolution unavailable: {exc}"
+            ) from None
+
+        if completed.returncode == 0:
+            configured = (completed.stdout or "").strip()
+            if configured:
+                resolved = configured
+        # On failure the token itself is the only candidate: this is how a
+        # directly-supplied URL is normalised, and how an unknown alias fails.
+
+        identity = canonical_repository_identity(resolved)
+        if identity is None:
+            raise ActionAdapterError(
+                f"push destination {resolved!r} is not a recognised canonical "
+                "GitHub repository"
+            )
+        if identity != self.canonical_repository_identity:
+            raise ActionAdapterError(
+                f"push destination {resolved!r} resolves to {identity}, which is "
+                f"not the canonical project repository "
+                f"{self.canonical_repository_identity}"
+            )
+        return identity
+
     # -- normalisation -----------------------------------------------------
 
     def normalize(self, operation: dict[str, Any], actor_id: Any) -> NormalizedAction:
@@ -441,19 +633,53 @@ class ActionAdapter:
         if subcommand == "push":
             parsed = parse_push(argv[1:])
             refspecs = parsed["refspecs"]
-            forced = bool(parsed["force"])
+            forced = bool(parsed["force"]) or any(r.startswith("+") for r in refspecs)
             broad = bool(parsed["broad"])
             ambiguous = bool(parsed["ambiguous"])
+            deleting = bool(parsed["delete"]) or any(_refspec_is_deletion(r) for r in refspecs)
 
-            if not ambiguous:
+            # Core law: local repository + *actual resolved remote repository*
+            # + destination ref/effect + force/broad semantics. The remote alias
+            # is caller content; where it points is read from trusted state and
+            # must be the canonical project repository before any Git push
+            # capability can be emitted at all.
+            remote_repository = self._resolve_push_remote(parsed["remote"])
+
+            if not ambiguous and refspecs:
                 consequential, destination = classify_push_refspec(refspecs[0])
             else:
                 consequential, destination = True, None
 
+            if ambiguous or len(refspecs) != 1:
+                destination_ref = ""
+            else:
+                destination_ref = _destination_ref(destination) or _refspec_destination_ref(
+                    refspecs[0]
+                )
+
+            if deleting:
+                effect_kind = "delete"
+            elif forced:
+                effect_kind = "force"
+            elif broad:
+                effect_kind = "broad"
+            else:
+                effect_kind = "push"
+
+            arguments = {
+                "repository": repo,
+                "remote_repository": remote_repository,
+                "destination_ref": destination_ref,
+                "push_effect": _push_effect(effect_kind, destination_ref, refspecs),
+            }
+
             if consequential or forced or broad or ambiguous:
                 action = "git.history.rewrite"
                 if destination:
-                    summary = f"rewrite public history on {destination}"
+                    summary = (
+                        f"{effect_kind} on {destination_ref or destination} "
+                        f"at {remote_repository}"
+                    )
                 elif ambiguous or broad:
                     summary = "push with an ambiguous or broad refspec (failing closed)"
                 else:
@@ -475,9 +701,9 @@ class ActionAdapter:
                         "namespace, so it is not mappable to git.push.feature"
                     )
                 action = "git.push.feature"
-                summary = f"push feature branch {feature}"
+                summary = f"push feature branch {feature} to {remote_repository}"
                 supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
-            return action, {"repository": repo}, summary, supervision
+            return action, arguments, summary, supervision
 
         if subcommand == "merge":
             action = "git.merge.accepted"

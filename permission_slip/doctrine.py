@@ -34,7 +34,15 @@ FIXTURE_FORMAT_VERSION = "0.1"
 CAPABILITY_SHAPES: dict[str, dict[str, Any]] = {
     "dev.tests.run": {"args": {"path": "string"}, "scope_arg": "path"},
     "project.files.edit": {"args": {"path": "string"}, "scope_arg": "path"},
-    "git.push.feature": {"args": {"repository": "string"}, "scope_arg": "repository"},
+    "git.push.feature": {
+        "args": {
+            "repository": "string",
+            "remote_repository": "string",
+            "destination_ref": "string",
+            "push_effect": "string",
+        },
+        "scope_arg": "repository",
+    },
     "git.merge.accepted": {
         "args": {"repository": "string"},
         "scope_arg": "repository",
@@ -43,7 +51,15 @@ CAPABILITY_SHAPES: dict[str, dict[str, Any]] = {
     "data.external_upload.secret": {
         "args": {"destination": "string", "secret_kind": "string"},
     },
-    "git.history.rewrite": {"args": {"repository": "string"}, "scope_arg": "repository"},
+    "git.history.rewrite": {
+        "args": {
+            "repository": "string",
+            "remote_repository": "string",
+            "destination_ref": "string",
+            "push_effect": "string",
+        },
+        "scope_arg": "repository",
+    },
     "money.real_charge": {"args": {"amount_cents": "integer", "vendor": "string"}},
     "money.promotional_credit.use": {
         "args": {"amount_cents": "integer", "vendor": "string", "path": "string"},

@@ -9,3 +9,6 @@ when
 do
     git.push.feature
         repository: anchor.repository
+        remote_repository: anchor.remote_repository
+        destination_ref: anchor.destination_ref
+        push_effect: anchor.push_effect

@@ -11,10 +11,13 @@ the operation document.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from permission_slip.actions import ActionAdapterError
 from permission_slip.doctrine import compile_doctrine, load_doctrine
 from permission_slip.spike import (
     DECISION_ALLOW,
@@ -26,6 +29,14 @@ from permission_slip.tethers_client import (
     EXPECTED_ENGINE_SHA256,
     REQUIRED_TETHERS_SHA,
     discover_tethers,
+)
+from tests.support import (
+    CANONICAL_IDENTITY,
+    CANONICAL_REPOSITORY,
+    EVIL_REMOTE_URL,
+    add_remote,
+    init_git_repo,
+    set_remote_url,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -82,8 +93,9 @@ class VerticalSpikeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="ps-vertical-")
         self.addCleanup(self.tmp.cleanup)
         base = Path(self.tmp.name)
-        self.repo = base / "repo"
-        self.repo.mkdir(parents=True, exist_ok=True)
+        # A real temporary Git repository so push remotes resolve from trusted
+        # local state. ``origin`` points at the canonical project repository.
+        self.repo = init_git_repo(base / "repo")
         self.ps = PermissionSlip(
             DOCTRINE_PATH, workdir=base / "work", repo_root=self.repo, paths=self.paths
         )
@@ -279,6 +291,138 @@ class VerticalSpikeTests(unittest.TestCase):
                 self.assertFalse(receipt.executed)
         self.assertFalse((self.sandbox() / "credit.log").exists())
 
+    # -- trusted remote resolution and exact action binding -----------------
+
+    def _prepare_push(self, argv, evaluation_id: str):
+        normalized = self.ps.adapter.normalize(
+            {"tool": "git", "argv": argv}, actor_id="worker-agent"
+        )
+        payload = self.ps.prepare_payload(normalized, evaluation_id)
+        response = self.ps.session.prepare(
+            action_id=payload["action_id"],
+            evaluation_id=payload["evaluation_id"],
+            tether_id=payload["tether"]["id"],
+            tether_version=payload["tether"]["version"],
+            event_id=payload["event"]["id"],
+            event_name=payload["event"]["name"],
+            event_data=payload["event"]["data"],
+            facts=payload["facts"],
+        )
+        return normalized, payload, response
+
+    def test_21_canonical_remote_feature_push_is_allowed(self):
+        receipt = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(receipt.decision, DECISION_ALLOW)
+        self.assertIsNone(receipt.approval_id)
+        self.assertTrue(receipt.executed)
+        arguments = receipt.normalized["arguments"]
+        self.assertEqual(arguments["remote_repository"], CANONICAL_IDENTITY)
+        self.assertEqual(
+            arguments["destination_ref"], "refs/heads/feature/vertical-spike"
+        )
+        self.assertEqual(
+            arguments["push_effect"], "push:refs/heads/feature/vertical-spike"
+        )
+        self.assertTrue((self.sandbox() / "pushes.log").exists())
+
+    def test_22_wrong_remote_is_denied_without_execution(self):
+        add_remote(self.repo, "evil-remote", EVIL_REMOTE_URL)
+        receipt = self.ps.run(
+            {"tool": "git", "argv": ["push", "evil-remote", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(receipt.decision, DECISION_DENY)
+        self.assertEqual(receipt.reason, "unmappable_operation")
+        self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "pushes.log").exists())
+
+    def test_23_origin_is_a_label_and_follows_current_configuration(self):
+        # Hostile check: "origin" is a label, its resolved destination is the fact.
+        allowed = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(allowed.decision, DECISION_ALLOW)
+
+        set_remote_url(self.repo, "origin", EVIL_REMOTE_URL)
+        denied = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(denied.decision, DECISION_DENY)
+        self.assertEqual(denied.reason, "unmappable_operation")
+        self.assertFalse(denied.executed)
+
+        set_remote_url(self.repo, "origin", CANONICAL_REPOSITORY)
+        restored = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(restored.decision, DECISION_ALLOW)
+
+    def test_24_force_push_binds_remote_and_ref_into_tethers_input(self):
+        receipt = self.ps.run(
+            {"tool": "git", "argv": ["push", "--force", "origin", "main"]}, "worker-agent"
+        )
+        self.assertEqual(receipt.decision, DECISION_ASK)
+        self.assertFalse(receipt.executed)
+        arguments = receipt.normalized["arguments"]
+        self.assertEqual(arguments["remote_repository"], CANONICAL_IDENTITY)
+        self.assertEqual(arguments["destination_ref"], "refs/heads/main")
+        self.assertEqual(arguments["push_effect"], "force:refs/heads/main")
+
+        # The bound fields are what Tethers actually receives, not just prose.
+        normalized, payload, response = self._prepare_push(
+            ["push", "--force", "origin", "main"], "eval-force-main"
+        )
+        self.assertEqual(response["decision"], "ask")
+        event_data = payload["event"]["data"]
+        self.assertEqual(event_data["remote_repository"], CANONICAL_IDENTITY)
+        self.assertEqual(event_data["destination_ref"], "refs/heads/main")
+        self.assertEqual(event_data["push_effect"], "force:refs/heads/main")
+        self.assertTrue(response["approval"]["argument_digest"].startswith("sha256:"))
+        self.assertIn("argument digest", response["approval"]["effect_summary"])
+
+    def test_25_distinct_ref_effects_get_distinct_tethers_argument_digests(self):
+        main_norm, main_payload, main_response = self._prepare_push(
+            ["push", "--force", "origin", "main"], "eval-main"
+        )
+        release_norm, release_payload, release_response = self._prepare_push(
+            ["push", "--force", "origin", "release"], "eval-release"
+        )
+        self.assertEqual(main_response["decision"], "ask")
+        self.assertEqual(release_response["decision"], "ask")
+
+        main_digest = main_response["approval"]["argument_digest"]
+        release_digest = release_response["approval"]["argument_digest"]
+        self.assertTrue(main_digest.startswith("sha256:"))
+        self.assertNotEqual(main_digest, release_digest)
+        # The prepared action identities differ too.
+        self.assertNotEqual(main_response["prepared_id"], release_response["prepared_id"])
+        # And Permission Slip's own view of the Tethers action input differs.
+        self.assertNotEqual(main_payload["event"]["data"], release_payload["event"]["data"])
+        self.assertNotEqual(
+            main_norm.arguments["push_effect"], release_norm.arguments["push_effect"]
+        )
+
+    def test_26_wrong_remote_force_push_fails_closed_before_prepare(self):
+        set_remote_url(self.repo, "origin", "https://github.com/someone-else/repo.git")
+        with self.assertRaises(ActionAdapterError):
+            self.ps.adapter.normalize(
+                {"tool": "git", "argv": ["push", "--force", "origin", "main"]},
+                actor_id="worker-agent",
+            )
+        receipt = self.ps.run(
+            {"tool": "git", "argv": ["push", "--force", "origin", "main"]}, "worker-agent"
+        )
+        self.assertEqual(receipt.decision, DECISION_DENY)
+        self.assertEqual(receipt.reason, "unmappable_operation")
+        self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "history-rewrite.log").exists())
+
     def test_12_public_publication_asks(self):
         receipt = self.ps.run(publish_op(), "worker-agent")
         self.assertEqual(receipt.decision, DECISION_ASK)
@@ -363,6 +507,57 @@ class FixtureAndPinningTests(unittest.TestCase):
         self.assertIn(paths.verification, ("exact", "tree_equivalent"))
         self.assertEqual(paths.engine_sha256, EXPECTED_ENGINE_SHA256)
         self.assertTrue(paths.engine_matches_artifact)
+
+    def test_git_capabilities_bind_remote_and_effect_in_the_fixture(self):
+        # The remote/effect fields must reach the action Tethers sees, not just
+        # Permission Slip's receipt or prose.
+        for slug in ("git-push-feature", "git-history-rewrite"):
+            with self.subTest(capability=slug):
+                tether = (COMMITTED_FIXTURE / "tethers" / f"{slug}.tether").read_text(
+                    encoding="utf-8"
+                )
+                for field in ("repository", "remote_repository", "destination_ref", "push_effect"):
+                    self.assertIn(f"{field}: anchor.{field}", tether)
+
+                manifest = json.loads(
+                    (COMMITTED_FIXTURE / "manifests" / f"{slug}.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                expected = {
+                    "repository",
+                    "remote_repository",
+                    "destination_ref",
+                    "push_effect",
+                }
+                self.assertEqual(set(manifest["input_schema"]["required"]), expected)
+                self.assertEqual(manifest["input_schema"]["additionalProperties"], False)
+                self.assertEqual(
+                    manifest["permission_scope"],
+                    {"kind": "path_prefix", "allowed_prefixes": ["runtime/spike-workspace/"]},
+                )
+
+    def test_path_scope_still_binds_the_local_repository_argument(self):
+        runtime = json.loads(
+            (COMMITTED_FIXTURE / "runtime.json").read_text(encoding="utf-8")
+        )
+        bindings = {
+            cap["name"]: cap.get("scope_binding")
+            for cap in runtime["providers"][0]["capabilities"]
+        }
+        pointer = {"kind": "path_prefix", "argument_json_pointer": "/repository"}
+        self.assertEqual(bindings["git.push.feature"], pointer)
+        self.assertEqual(bindings["git.history.rewrite"], pointer)
+        # Merge is unchanged: it is not a remote/ref push effect.
+        self.assertEqual(bindings["git.merge.accepted"], pointer)
+
+    def test_merge_capability_arguments_are_unchanged(self):
+        manifest = json.loads(
+            (COMMITTED_FIXTURE / "manifests" / "git-merge-accepted.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(manifest["input_schema"]["required"], ["repository"])
 
 
 if __name__ == "__main__":
