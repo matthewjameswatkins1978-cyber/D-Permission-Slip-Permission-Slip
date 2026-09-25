@@ -3,7 +3,7 @@
   "capability_name": "money.promotional_credit.use",
   "capability_version": 1,
   "title": "Permission Slip fixture: money.promotional_credit.use",
-  "description": "Spend bounded promotional/free credit.",
+  "description": "Spend promotional credit at the approved provider within the configured per-call limit.",
   "input_schema": {
     "type": "object",
     "properties": {

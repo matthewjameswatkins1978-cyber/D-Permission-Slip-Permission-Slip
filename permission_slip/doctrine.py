@@ -237,7 +237,10 @@ def _input_fact(fact: str) -> dict[str, Any]:
     description = {
         "actor.trusted": "actor is supplied by the trusted harness profile",
         "actor.merge_authority": "trusted actor holds accepted-work merge authority",
-        "promo.within_budget": "trusted charge is within the configured promotional bound",
+        "promo.within_bound": (
+            "trusted charge uses the configured promotional provider and is within "
+            "the configured per-call promotional limit"
+        ),
     }.get(fact, "trusted harness fact")
     return {
         "source_name": fact,

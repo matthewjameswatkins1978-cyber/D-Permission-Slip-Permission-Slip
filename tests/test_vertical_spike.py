@@ -60,11 +60,11 @@ def force_push_op() -> dict:
     return {"tool": "git", "argv": ["push", "--force", "origin", "main"]}
 
 
-def payment_op(amount_cents: int, funding: str) -> dict:
+def payment_op(amount_cents, funding: str, vendor: str = "cloud-fixture") -> dict:
     return {
         "tool": "payment",
         "amount_cents": amount_cents,
-        "vendor": "cloud-fixture",
+        "vendor": vendor,
         "funding": funding,
     }
 
@@ -225,13 +225,59 @@ class VerticalSpikeTests(unittest.TestCase):
         self.assertFalse((self.sandbox() / "charges.log").exists())
 
     def test_11_bounded_promotional_credit_allows_inside_and_not_outside(self):
-        within = self.ps.run(payment_op(1000, "promotional"), "worker-agent")
-        self.assertEqual(within.decision, DECISION_ALLOW)
-        self.assertTrue(within.executed)
+        # Positive evidence for standing ALLOW: approved provider + promotional
+        # source + strictly positive amount within the configured per-call limit.
+        for amount in (1000, 5000):
+            with self.subTest(amount=amount):
+                allowed = self.ps.run(payment_op(amount, "promotional"), "worker-agent")
+                self.assertEqual(allowed.decision, DECISION_ALLOW)
+                self.assertTrue(allowed.executed)
 
-        outside = self.ps.run(payment_op(9000, "promotional"), "worker-agent")
-        self.assertEqual(outside.decision, DECISION_DENY)
-        self.assertFalse(outside.executed)
+        credit_log = self.sandbox() / "credit.log"
+        admitted = credit_log.read_text(encoding="utf-8")
+
+        denied_cases = (
+            payment_op(5001, "promotional"),  # above per-call limit
+            payment_op(1000, "promotional", vendor="other-vendor"),  # wrong provider
+            payment_op(0, "promotional"),  # not a positive amount
+            payment_op(-100, "promotional"),  # negative amount
+        )
+        for operation in denied_cases:
+            with self.subTest(operation=operation):
+                denied = self.ps.run(operation, "worker-agent")
+                self.assertEqual(denied.decision, DECISION_DENY)
+                self.assertFalse(denied.executed)
+        self.assertEqual(credit_log.read_text(encoding="utf-8"), admitted)
+
+    def test_18_non_feature_push_is_unmappable_and_denied(self):
+        # Absence from the protected list is not positive feature authority.
+        for name in ("production", "stable", "gh-pages", "shared", "arbitrary-name"):
+            with self.subTest(name=name):
+                receipt = self.ps.run(
+                    {"tool": "git", "argv": ["push", "origin", name]}, "worker-agent"
+                )
+                self.assertEqual(receipt.decision, DECISION_DENY)
+                self.assertEqual(receipt.reason, "unmappable_operation")
+                self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "pushes.log").exists())
+        self.assertFalse((self.sandbox() / "history-rewrite.log").exists())
+
+    def test_19_force_push_to_feature_branch_is_not_standing_allowed(self):
+        receipt = self.ps.run(
+            {"tool": "git", "argv": ["push", "--force", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(receipt.decision, DECISION_ASK)
+        self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "pushes.log").exists())
+
+    def test_20_malformed_payment_amount_fails_closed(self):
+        for raw in ("1000", 1000.5, True, None, [1000]):
+            with self.subTest(raw=raw):
+                receipt = self.ps.run(payment_op(raw, "promotional"), "worker-agent")
+                self.assertEqual(receipt.decision, DECISION_DENY)
+                self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "credit.log").exists())
 
     def test_12_public_publication_asks(self):
         receipt = self.ps.run(publish_op(), "worker-agent")

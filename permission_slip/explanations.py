@@ -81,7 +81,10 @@ def explain(normalized: NormalizedAction) -> dict[str, Any]:
             f"{_money(int(args.get('amount_cents', 0)))} of promotional credit at "
             f"{args.get('vendor', 'a provider')}."
         )
-        why = "Promotional credit is bounded and only valid inside its configured scope."
+        why = (
+            "Promotional credit is limited to the approved provider and to a "
+            "configured per-call limit; this charge is inside that limit."
+        )
         changes = "Allowing this permits this exact bounded credit use once."
 
     elif action == "identity.public_publish":
@@ -107,7 +110,10 @@ def explain(normalized: NormalizedAction) -> dict[str, Any]:
 
     elif action == "git.push.feature":
         what = "This worker is about to push an ordinary feature branch."
-        why = "A non-force feature push does not rewrite shared history."
+        why = (
+            "The destination is positively inside the feature/* namespace and the "
+            "push is non-force, so it does not rewrite shared history."
+        )
         changes = "Allowing this pushes this feature branch once."
 
     elif action == "git.merge.accepted":

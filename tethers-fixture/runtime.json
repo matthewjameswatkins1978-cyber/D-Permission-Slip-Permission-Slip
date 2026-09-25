@@ -243,11 +243,11 @@
               "schema_description": "actor is supplied by the trusted harness profile"
             },
             {
-              "source_name": "promo.within_budget",
-              "fact_id": "fact.promo_within_budget",
-              "host_snapshot_key": "promo.within_budget",
+              "source_name": "promo.within_bound",
+              "fact_id": "fact.promo_within_bound",
+              "host_snapshot_key": "promo.within_bound",
               "scalar_type": "boolean",
-              "schema_description": "trusted charge is within the configured promotional bound"
+              "schema_description": "trusted charge uses the configured promotional provider and is within the configured per-call promotional limit"
             }
           ]
         }
@@ -293,7 +293,7 @@
       {
         "name": "git.push.feature",
         "version": 1,
-        "reason": "Push an ordinary non-force feature branch."
+        "reason": "Push an ordinary non-force branch inside the feature/* namespace."
       },
       {
         "name": "git.merge.accepted",
@@ -323,7 +323,7 @@
       {
         "name": "money.promotional_credit.use",
         "version": 1,
-        "reason": "Spend bounded promotional/free credit."
+        "reason": "Spend promotional credit at the approved provider within the configured per-call limit."
       },
       {
         "name": "identity.public_publish",

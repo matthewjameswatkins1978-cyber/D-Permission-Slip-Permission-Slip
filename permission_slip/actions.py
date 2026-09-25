@@ -54,10 +54,41 @@ FORBIDDEN_CALLER_KEYS = (
 
 PROTECTED_BRANCHES = {"main", "master", "trunk", "release"}
 
-# Git push options that consume the following token as their value.
-_PUSH_VALUE_OPTIONS = {"--repo", "--receive-pack", "--exec", "-o", "--push-option"}
-# Git push options that are inherently broad / destructive.
-_BROAD_PUSH_FLAGS = {"--all", "--mirror", "--branches", "--tags", "--delete", "-d"}
+# Positive-evidence namespace for standing ``git.push.feature`` authority.
+# A destination must be *inside* this namespace to be admitted at all; a
+# destination that is merely absent from ``PROTECTED_BRANCHES`` is not enough.
+FEATURE_NAMESPACE = "feature/"
+
+# Characters git itself refuses in a ref name. Used so that a hostile-looking
+# destination cannot be smuggled through the positive feature check.
+_REF_FORBIDDEN = frozenset("~^:?*[\\ @{}")
+
+# Push options that consume the following token as their value.
+_PUSH_VALUE_OPTIONS = {"--repo", "--receive-pack", "--exec", "--push-option", "-o"}
+# Push options that are inherently broad / destructive.
+_BROAD_PUSH_FLAGS = {"--all", "--mirror", "--branches", "--tags", "--delete", "--prune", "-d"}
+# Push options positively recognised as safe: non-force, non-deleting and
+# non-retargeting. Everything else is unrecognised and fails closed.
+_SAFE_PUSH_FLAGS = frozenset(
+    {
+        "--set-upstream",
+        "--verbose",
+        "--quiet",
+        "--progress",
+        "--no-thin",
+        "--atomic",
+        "--follow-tags",
+        "--ipv4",
+        "--ipv6",
+    }
+)
+# Push options that change *where* the push lands or *what* runs on the far
+# side, so the adapter's trusted ``repository`` argument would stop being
+# truthful.
+_RETARGET_PUSH_OPTIONS = frozenset({"--repo", "--exec", "--receive-pack"})
+# Short single-dash options git push accepts. ``o`` is excluded: it takes a
+# value and is handled separately.
+_SAFE_SHORT_PUSH_FLAGS = frozenset("fduvqn")
 
 
 class ActionAdapterError(ValueError):
@@ -144,6 +175,9 @@ def classify_push_refspec(refspec: str) -> tuple[bool, str | None]:
         if source == "":
             # Remote ref deletion (``git push origin :branch``).
             return True, None
+        if "*" in source:
+            # Wildcard source: a wildcard push, never a single ordinary branch.
+            return True, None
     else:
         destination = refspec
 
@@ -171,15 +205,51 @@ def classify_push_refspec(refspec: str) -> tuple[bool, str | None]:
     return False, name
 
 
+def feature_branch_destination(label: str | None) -> str | None:
+    """Positive evidence that a push destination sits inside ``feature/*``.
+
+    Returns the destination label when the destination is *affirmatively* a
+    feature-branch name, otherwise ``None``.
+
+    This is an allow-list, not a deny-list: standing ``git.push.feature``
+    authority exists only because the destination can be positively shown to be
+    in the feature namespace. A destination that is merely unknown or absent
+    from :data:`PROTECTED_BRANCHES` produces no evidence and therefore no
+    standing authority.
+    """
+    if not isinstance(label, str) or not label.startswith(FEATURE_NAMESPACE):
+        return None
+
+    rest = label[len(FEATURE_NAMESPACE):]
+    if not rest:
+        return None
+    # Refuse anything git would itself reject, so a hostile destination cannot
+    # masquerade as a feature branch name.
+    if ".." in rest or "//" in rest or "@{" in rest:
+        return None
+    if rest.startswith(("/", ".")) or rest.endswith(("/", ".")):
+        return None
+    if rest.endswith(".lock"):
+        return None
+    if any(ch in _REF_FORBIDDEN or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in rest):
+        return None
+    return label
+
+
 def parse_push(args: list[str]) -> dict[str, Any]:
     """Parse ``git push`` arguments (excluding the subcommand).
 
     Returns ``{"force": bool, "broad": bool, "refspecs": [...], "ambiguous":
-    bool}`` where ``ambiguous`` is true when no explicit, unambiguous refspec
-    could be established.
+    bool}``.
+
+    ``ambiguous`` is true when the push is not *positively* established as a
+    single ordinary refspec with every token recognised. That includes an
+    unrecognised push option: standing feature authority is granted only on
+    positive evidence, never because nothing dangerous was spotted.
     """
     force = False
     broad = False
+    unrecognised = False
     positionals: list[str] = []
     index = 0
     while index < len(args):
@@ -188,14 +258,38 @@ def parse_push(args: list[str]) -> dict[str, Any]:
             positionals.extend(args[index + 1:])
             break
         if token.startswith("-") and token != "-":
-            if token in ("-f", "--force") or token.startswith("--force-with-lease") or token.startswith(
-                "--force-if-includes"
-            ):
-                force = True
-            elif token in _BROAD_PUSH_FLAGS:
-                broad = True
-            elif token in _PUSH_VALUE_OPTIONS:
-                index += 1  # consume the option's value
+            if token.startswith("--"):
+                name, separator, _inline = token.partition("=")
+                # Every force form, including git's unambiguous abbreviations
+                # such as ``--force-with-leas``.
+                if name.startswith("--force"):
+                    force = True
+                elif name in _BROAD_PUSH_FLAGS:
+                    broad = True
+                elif name in _RETARGET_PUSH_OPTIONS:
+                    if not separator:
+                        index += 1  # consume the option's value
+                    unrecognised = True
+                elif name in _PUSH_VALUE_OPTIONS:
+                    if not separator:
+                        index += 1  # consume the option's value
+                elif name in _SAFE_PUSH_FLAGS:
+                    pass
+                else:
+                    unrecognised = True
+            else:
+                cluster = token[1:]
+                if cluster[:1] == "o":
+                    # ``-o`` / ``-ovalue`` (push-option) takes a value.
+                    if cluster == "o":
+                        index += 1
+                else:
+                    if set(cluster) - _SAFE_SHORT_PUSH_FLAGS:
+                        unrecognised = True
+                    if "f" in cluster:
+                        force = True  # covers combined short flags such as ``-fu``
+                    if "d" in cluster:
+                        broad = True
             index += 1
             continue
         positionals.append(token)
@@ -203,7 +297,7 @@ def parse_push(args: list[str]) -> dict[str, Any]:
 
     # First positional (when two or more exist) is the repository.
     refspecs = positionals[1:] if len(positionals) >= 2 else []
-    ambiguous = len(refspecs) != 1
+    ambiguous = len(refspecs) != 1 or unrecognised
     return {"force": force, "broad": broad, "refspecs": refspecs, "ambiguous": ambiguous}
 
 
@@ -214,7 +308,9 @@ class ActionAdapter:
         project = doctrine.get("project", {})
         self.root_scope = project.get("root_scope", "runtime/spike-workspace/")
         credit = doctrine.get("boundaries", {}).get("promotional_credit", {})
-        self.promo_budget_cents = int(credit.get("budget_cents", 0))
+        # v0.1 enforces a *per-call* limit only. There is no cumulative ledger
+        # and this value must never be described as an overall budget.
+        self.promo_per_call_limit_cents = int(credit.get("per_call_limit_cents", 0))
         self.promo_provider = credit.get("provider")
         self.known_destinations = set(
             doctrine.get("boundaries", {}).get("external_upload", {}).get("known_destinations", [])
@@ -368,8 +464,18 @@ class ActionAdapter:
                     affected_parties=("repository collaborators", "public"),
                 )
             else:
+                # Standing authority requires *positive* evidence that the
+                # destination is inside feature/*. Anything else is unmappable
+                # and fails closed rather than borrowing standing authority.
+                feature = feature_branch_destination(destination)
+                if feature is None:
+                    raise ActionAdapterError(
+                        "git push destination "
+                        f"{destination!r} is not inside the {FEATURE_NAMESPACE!r} "
+                        "namespace, so it is not mappable to git.push.feature"
+                    )
                 action = "git.push.feature"
-                summary = f"push feature branch {destination}"
+                summary = f"push feature branch {feature}"
                 supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
             return action, {"repository": repo}, summary, supervision
 
@@ -412,21 +518,55 @@ class ActionAdapter:
             summary = f"upload repository data to {destination}"
         return action, arguments, summary, supervision
 
+    @staticmethod
+    def _parse_amount_cents(raw: Any) -> int:
+        """Parse a caller-supplied amount strictly.
+
+        A boolean, float, string, or missing amount is malformed for an
+        integer-cents capability and fails closed instead of coercing into an
+        amount that could sit inside a bound.
+        """
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ActionAdapterError(
+                "payment amount_cents must be an integer number of cents"
+            )
+        return raw
+
+    def _promotional_within_bound(self, vendor: str, amount: int) -> bool:
+        """Positive evidence that this exact charge may use promotional credit.
+
+        v0.1 proves a **per-call** limit only. There is no cumulative ledger,
+        so every clause must be independently true for this call:
+
+        * the configured provider is present and the operation's vendor is it;
+        * the amount is strictly positive;
+        * the amount is within the configured per-call limit.
+
+        Anything else is not evidence, and the fact stays false.
+        """
+        if not self.promo_provider or vendor != self.promo_provider:
+            return False
+        if amount <= 0:
+            return False
+        return amount <= self.promo_per_call_limit_cents
+
     def _normalize_payment(
         self, operation: dict[str, Any], facts: dict[str, Any]
     ) -> tuple[str, dict[str, Any], dict[str, Any], str, SupervisoryMetadata]:
-        amount = int(operation.get("amount_cents", 0))
+        amount = self._parse_amount_cents(operation.get("amount_cents"))
         vendor = str(operation.get("vendor", operation.get("provider", "")))
         if operation.get("funding") == "promotional":
-            within = amount <= self.promo_budget_cents
             action = "money.promotional_credit.use"
             arguments = {
                 "amount_cents": amount,
                 "vendor": vendor,
                 "path": self._workspace_path("credit", "usage"),
             }
-            facts = {**facts, "promo.within_budget": within}
-            summary = f"spend {amount}c promotional credit at {vendor}"
+            facts = {**facts, "promo.within_bound": self._promotional_within_bound(vendor, amount)}
+            summary = (
+                f"spend {amount}c promotional credit at {vendor} "
+                f"(per-call limit {self.promo_per_call_limit_cents}c)"
+            )
             supervision = SupervisoryMetadata(
                 reversibility=self._reversibility(action),
                 real_money=False,

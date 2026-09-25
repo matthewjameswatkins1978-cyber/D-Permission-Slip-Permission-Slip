@@ -3,7 +3,7 @@
   "capability_name": "git.push.feature",
   "capability_version": 1,
   "title": "Permission Slip fixture: git.push.feature",
-  "description": "Push an ordinary non-force feature branch.",
+  "description": "Push an ordinary non-force branch inside the feature/* namespace.",
   "input_schema": {
     "type": "object",
     "properties": {

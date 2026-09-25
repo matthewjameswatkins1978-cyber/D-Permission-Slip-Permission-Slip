@@ -5,7 +5,7 @@ anchor
 
 when
     actor.trusted is true
-    and promo.within_budget is true
+    and promo.within_bound is true
 
 do
     money.promotional_credit.use

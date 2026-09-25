@@ -50,9 +50,9 @@
     },
     "promotional_credit": {
       "provider": "cloud-fixture",
-      "budget_cents": 5000,
+      "per_call_limit_cents": 5000,
       "currency": "USD",
-      "note": "Bounded free/promotional credit only. Real money is a separate consequence."
+      "note": "Per-call promotional credit limit only; no cumulative spend ledger is enforced in v0.1. Real money is a separate consequence."
     }
   },
   "capabilities": [
@@ -74,7 +74,7 @@
     },
     {
       "action": "git.push.feature",
-      "purpose": "Push an ordinary non-force feature branch.",
+      "purpose": "Push an ordinary non-force branch inside the feature/* namespace.",
       "standing": "allow",
       "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
       "reversibility": "compensatable",
@@ -123,9 +123,9 @@
     },
     {
       "action": "money.promotional_credit.use",
-      "purpose": "Spend bounded promotional/free credit.",
+      "purpose": "Spend promotional credit at the approved provider within the configured per-call limit.",
       "standing": "allow",
-      "requires": ["promo.within_budget"],
+      "requires": ["promo.within_bound"],
       "scope": {"kind": "path_prefix", "prefixes": ["runtime/spike-workspace/"]},
       "reversibility": "compensatable",
       "effects": ["money.credit.use"]

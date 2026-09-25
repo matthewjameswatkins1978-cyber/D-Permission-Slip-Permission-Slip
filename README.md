@@ -63,7 +63,7 @@ Layout:
 | `permission_slip/executor.py` | Safe fixture external executor |
 | `permission_slip/spike.py` | Vertical orchestration |
 | `tethers-fixture/` | Compiled inspectable Tethers runtime/config fixtures |
-| `tests/` | The 16-case end-to-end matrix + adapter/pinning tests |
+| `tests/` | The 20-case end-to-end matrix + adapter/pinning tests |
 | `scripts/` | Toolchain bootstrap and spike runner |
 
 ## Trust boundary
@@ -79,9 +79,18 @@ derives authority-relevant facts **from the actual operation**:
 - equivalent consequential push forms (`HEAD:main`, `feature:main`,
   `+feature`, `--force-with-lease=...`, deletions) are recognised; an
   ambiguous push **fails closed** and never becomes `git.push.feature`;
+- `git.push.feature` is granted on **positive evidence only**: the single
+  unambiguous destination must sit inside the `feature/*` namespace and the
+  push must carry no force semantics. A destination that is merely unknown
+  (`production`, `stable`, `gh-pages`, `arbitrary-name`, ...) is *not*
+  evidence, is not silently re-described as a history rewrite, and fails
+  closed as unmappable → `DENY`;
 - external destination comes from the actual target;
 - secret material takes precedence over ordinary repository upload;
-- monetary amount/source comes from the trusted payment fields;
+- monetary amount/source comes from the trusted payment fields, and a
+  promotional-credit charge is admitted only on positive evidence of the
+  configured provider **and** a strictly positive amount inside the
+  configured **per-call** limit;
 - project file scope comes from **canonicalised resolved paths**: traversal is
   resolved against the trusted project root and never rewritten into an
   apparently in-scope path.
@@ -145,9 +154,20 @@ SHA exercised. To provision a fresh pinned Tethers checkout into `.deps/`
   rewrite, upload, money, and publication rather than forcing those concepts
   into filesystem scope.
 - Bounded numeric scope (promotional credit) is not a native Tethers runtime
-  scope. The trusted adapter derives a `promo.within_budget` fact from the
-  actual amount and the configured bound; the Tether condition and policy still
-  make the decision. No Tethers change was required.
+  scope. The trusted adapter derives a `promo.within_bound` fact from the
+  actual amount, the actual vendor, and the configured provider + per-call
+  limit; the Tether condition and policy still make the decision. No Tethers
+  change was required.
+- The v0.1 promotional-credit proof is a **per-call** limit
+  (`boundaries.promotional_credit.per_call_limit_cents`) at the approved
+  provider, not cumulative cloud spend. There is no ledger, no running total
+  and no remaining-credit accounting; a caller could in principle issue many
+  individually-allowed calls. Cumulative quota accounting is later product
+  work.
+- `git.push.feature` recognises only the explicit `feature/*` namespace. A
+  push to a branch outside it is unmappable in v0.1 and fails closed rather
+  than being given standing authority or a mislabelled capability. A general
+  branch taxonomy / `git.push.other` capability is deliberately not built.
 
 ## Origin
 
