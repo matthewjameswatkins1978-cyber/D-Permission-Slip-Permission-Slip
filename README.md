@@ -71,16 +71,23 @@ Layout:
 The worker/agent is not trusted to label its own consequences. The adapter
 derives authority-relevant facts **from the actual operation**:
 
+- actor identity comes from the **trusted harness/session context** passed to
+  `ActionAdapter.normalize(operation, actor_id)`, never from an `actor` field
+  inside the operation;
 - `git push --force origin main` becomes `git.history.rewrite`, regardless of
   what the caller calls it;
+- equivalent consequential push forms (`HEAD:main`, `feature:main`,
+  `+feature`, `--force-with-lease=...`, deletions) are recognised; an
+  ambiguous push **fails closed** and never becomes `git.push.feature`;
 - external destination comes from the actual target;
-- actor identity comes from the trusted harness profile, not from content;
 - secret material takes precedence over ordinary repository upload;
 - monetary amount/source comes from the trusted payment fields;
-- project file scope comes from resolved paths.
+- project file scope comes from **canonicalised resolved paths**: traversal is
+  resolved against the trusted project root and never rewritten into an
+  apparently in-scope path.
 
-Caller-supplied authority booleans (`permission`, `trusted`, `approved`, ...)
-are ignored by the adapter and refused by the Gate
+Caller-supplied authority booleans and identity claims (`actor`, `permission`,
+`trusted`, `approved`, ...) are ignored by the adapter and refused by the Gate
 (`frame.forbidden_authority_key`).
 
 ## Admission ordering

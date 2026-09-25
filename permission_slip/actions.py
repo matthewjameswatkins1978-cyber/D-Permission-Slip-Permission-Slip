@@ -5,11 +5,21 @@ authority-relevant facts. It is deliberately untrusting of the caller.
 
 Law it enforces:
 
+    Caller content describes requested work.
+    Trusted harness context establishes who is acting.
+    Trusted normalization establishes what the operation actually does.
+    Tethers alone establishes whether it is authorised.
+
+Concretely:
+
+* actor identity comes from a **trusted harness/session context** passed to
+  ``normalize``, never from the operation document;
 * authority-relevant facts are **derived from the actual operation**, never
   read from a model-supplied label;
 * caller-supplied authority booleans (``permission``, ``trusted``,
-  ``approved``, ``granted``, ...) are ignored, not honoured;
-* actor identity comes from the trusted harness profile, not from content.
+  ``approved``, ``granted``, ``actor``, ...) are ignored, not honoured;
+* when a consequential consequence cannot be safely established, the adapter
+  fails closed rather than guessing.
 
 The output is a :class:`NormalizedAction`: a semantic capability plus resolved
 arguments and trusted facts. Permission Slip does not decide ALLOW / ASK / DENY
@@ -22,8 +32,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-# Keys a caller might use to try to manufacture authority. They are never read.
+# Keys a caller might use to try to manufacture authority or identity. They are
+# never read. ``actor`` is included: identity is not caller-selectable.
 FORBIDDEN_CALLER_KEYS = (
+    "actor",
     "permission",
     "within_scope",
     "trusted",
@@ -40,8 +52,12 @@ FORBIDDEN_CALLER_KEYS = (
     "decision",
 )
 
-_SHARED_BRANCHES = {"main", "master", "trunk", "release"}
-_FORCE_FLAGS = {"--force", "-f", "--force-with-lease", "--force-if-includes"}
+PROTECTED_BRANCHES = {"main", "master", "trunk", "release"}
+
+# Git push options that consume the following token as their value.
+_PUSH_VALUE_OPTIONS = {"--repo", "--receive-pack", "--exec", "-o", "--push-option"}
+# Git push options that are inherently broad / destructive.
+_BROAD_PUSH_FLAGS = {"--all", "--mirror", "--branches", "--tags", "--delete", "-d"}
 
 
 class ActionAdapterError(ValueError):
@@ -49,7 +65,7 @@ class ActionAdapterError(ValueError):
 
 
 class UntrustedActorError(ActionAdapterError):
-    """The operation names an actor absent from the trusted harness profile."""
+    """The trusted context names an actor absent from the harness profile."""
 
 
 @dataclass(frozen=True)
@@ -94,20 +110,107 @@ class NormalizedAction:
         }
 
 
-def _posix_relative(path: str, cwd: str) -> str:
-    path = str(path)
-    if os.path.isabs(path):
-        try:
-            path = os.path.relpath(path, cwd)
-        except ValueError:
-            return path.replace("\\", "/")
-    return path.replace("\\", "/").lstrip("./")
+def _under_root(root: str, resolved: str) -> bool:
+    """True when ``resolved`` is the same as or beneath ``root`` (ancestry)."""
+    try:
+        return os.path.commonpath([root, resolved]) == root
+    except ValueError:
+        # Different drives on Windows: unambiguously outside.
+        return False
+
+
+def _strip_heads(ref: str) -> str:
+    prefix = "refs/heads/"
+    return ref[len(prefix):] if ref.startswith(prefix) else ref
+
+
+def classify_push_refspec(refspec: str) -> tuple[bool, str | None]:
+    """Classify one push refspec.
+
+    Returns ``(consequential, destination_label)``. ``destination_label`` is the
+    branch name when it can be established, otherwise ``None``.
+
+    The parser is intentionally small and conservative. It is not a full Git
+    refspec grammar; anything it cannot safely establish is treated as
+    consequential so it never silently becomes an ordinary feature push.
+    """
+    forced = False
+    if refspec.startswith("+"):
+        forced = True
+        refspec = refspec[1:]
+
+    if ":" in refspec:
+        source, destination = refspec.split(":", 1)
+        if source == "":
+            # Remote ref deletion (``git push origin :branch``).
+            return True, None
+    else:
+        destination = refspec
+
+    if destination == "":
+        # Remote ref deletion (``git push origin :branch``): consequential and
+        # not a feature push.
+        return True, None
+
+    if destination in ("HEAD", "@") or "*" in destination:
+        return True, None
+
+    if destination.startswith("refs/heads/"):
+        name = _strip_heads(destination)
+    elif destination.startswith("refs/"):
+        # Tags and other ref namespaces are not feature-branch pushes.
+        return True, None
+    else:
+        name = destination
+
+    if name == "":
+        return True, None
+
+    if forced or name in PROTECTED_BRANCHES:
+        return True, name
+    return False, name
+
+
+def parse_push(args: list[str]) -> dict[str, Any]:
+    """Parse ``git push`` arguments (excluding the subcommand).
+
+    Returns ``{"force": bool, "broad": bool, "refspecs": [...], "ambiguous":
+    bool}`` where ``ambiguous`` is true when no explicit, unambiguous refspec
+    could be established.
+    """
+    force = False
+    broad = False
+    positionals: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            positionals.extend(args[index + 1:])
+            break
+        if token.startswith("-") and token != "-":
+            if token in ("-f", "--force") or token.startswith("--force-with-lease") or token.startswith(
+                "--force-if-includes"
+            ):
+                force = True
+            elif token in _BROAD_PUSH_FLAGS:
+                broad = True
+            elif token in _PUSH_VALUE_OPTIONS:
+                index += 1  # consume the option's value
+            index += 1
+            continue
+        positionals.append(token)
+        index += 1
+
+    # First positional (when two or more exist) is the repository.
+    refspecs = positionals[1:] if len(positionals) >= 2 else []
+    ambiguous = len(refspecs) != 1
+    return {"force": force, "broad": broad, "refspecs": refspecs, "ambiguous": ambiguous}
 
 
 class ActionAdapter:
     def __init__(self, doctrine: dict[str, Any], repo_root: str | os.PathLike[str] | None = None):
         self.doctrine = doctrine
-        self.repo_root = os.path.abspath(repo_root or os.getcwd())
+        self.repo_root = os.path.realpath(repo_root or os.getcwd())
         project = doctrine.get("project", {})
         self.root_scope = project.get("root_scope", "runtime/spike-workspace/")
         credit = doctrine.get("boundaries", {}).get("promotional_credit", {})
@@ -134,10 +237,12 @@ class ActionAdapter:
             "actor.merge_authority": bool(actor.get("merge_authority", False)),
         }
 
-    def _resolve_actor(self, operation: dict[str, Any]) -> dict[str, Any]:
-        actor_id = operation.get("actor")
+    def resolve_actor(self, actor_id: Any) -> dict[str, Any]:
+        """Resolve a trusted actor from harness/session context only."""
         if not isinstance(actor_id, str) or actor_id not in self.actors:
-            raise UntrustedActorError(f"actor {actor_id!r} is not in the trusted harness profile")
+            raise UntrustedActorError(
+                f"trusted actor {actor_id!r} is not in the harness profile"
+            )
         return self.actors[actor_id]
 
     @staticmethod
@@ -150,19 +255,47 @@ class ActionAdapter:
                 return capability.get("reversibility", "unknown")
         return "unknown"
 
+    def _canonical_project_path(self, requested: Any) -> str:
+        """Canonicalise a requested path against the trusted project root.
+
+        Traversal is resolved against the real root. A path that escapes the
+        root is returned in its true out-of-scope relative form (leading
+        ``..`` segments preserved) or as an absolute path; it is never rewritten
+        into an apparently in-scope path.
+        """
+        requested = str(requested)
+        root = os.path.realpath(self.repo_root)
+        if os.path.isabs(requested):
+            resolved = os.path.realpath(requested)
+        else:
+            resolved = os.path.realpath(os.path.join(root, requested))
+        if _under_root(root, resolved):
+            return os.path.relpath(resolved, root).replace("\\", "/")
+        # Outside the trusted root: preserve the true out-of-scope identity,
+        # with traversal segments intact so scope evaluation denies it.
+        try:
+            return os.path.relpath(resolved, root).replace("\\", "/")
+        except ValueError:
+            # Different drive on Windows: preserve the absolute form.
+            return resolved.replace("\\", "/")
+
     # -- normalisation -----------------------------------------------------
 
-    def normalize(self, operation: dict[str, Any]) -> NormalizedAction:
+    def normalize(self, operation: dict[str, Any], actor_id: Any) -> NormalizedAction:
+        """Normalise an untrusted operation under a trusted actor context.
+
+        ``actor_id`` must come from trusted harness/session code. Any ``actor``
+        field inside ``operation`` is caller content and is ignored.
+        """
         if not isinstance(operation, dict):
             raise ActionAdapterError("operation envelope must be an object")
-        actor = self._resolve_actor(operation)
+        actor = self.resolve_actor(actor_id)
         claims = self._caller_claims(operation)
         tool = operation.get("tool")
-        cwd = str(operation.get("cwd", self.repo_root))
         facts = self._actor_facts(actor)
 
         if tool == "git":
-            action, arguments, summary, supervision = self._normalize_git(operation, cwd)
+            action, arguments, summary, supervision = self._normalize_git(operation)
         elif tool == "tests":
             action = "dev.tests.run"
             arguments = {"path": self._workspace_path("tests.log")}
@@ -170,7 +303,7 @@ class ActionAdapter:
             supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
         elif tool == "edit_file":
             action = "project.files.edit"
-            arguments = {"path": _posix_relative(operation.get("path", ""), cwd)}
+            arguments = {"path": self._canonical_project_path(operation.get("path", ""))}
             summary = f"edit {arguments['path']}"
             supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
         elif tool == "external_upload":
@@ -180,11 +313,11 @@ class ActionAdapter:
         elif tool == "publish":
             action = "identity.public_publish"
             arguments = {"channel": str(operation.get("channel", ""))}
-            summary = f"publish to {arguments['channel']} as {operation.get('as', actor['id'])}"
+            summary = f"publish to {arguments['channel']} as {actor['id']}"
             supervision = SupervisoryMetadata(
                 reversibility=self._reversibility(action),
                 private_to_public=True,
-                affected_parties=(str(operation.get("as", actor["id"])), "public"),
+                affected_parties=(actor["id"], "public"),
             )
         else:
             raise ActionAdapterError(f"unsupported trusted operation tool: {tool!r}")
@@ -200,7 +333,7 @@ class ActionAdapter:
         )
 
     def _normalize_git(
-        self, operation: dict[str, Any], cwd: str
+        self, operation: dict[str, Any]
     ) -> tuple[str, dict[str, Any], str, SupervisoryMetadata]:
         argv = operation.get("argv")
         if not isinstance(argv, list) or not argv:
@@ -210,12 +343,25 @@ class ActionAdapter:
         repo = self._repo_path()
 
         if subcommand == "push":
-            force = any(flag in argv for flag in _FORCE_FLAGS)
-            branch = self._push_branch(argv)
-            shared = branch in _SHARED_BRANCHES
-            if force or shared:
+            parsed = parse_push(argv[1:])
+            refspecs = parsed["refspecs"]
+            forced = bool(parsed["force"])
+            broad = bool(parsed["broad"])
+            ambiguous = bool(parsed["ambiguous"])
+
+            if not ambiguous:
+                consequential, destination = classify_push_refspec(refspecs[0])
+            else:
+                consequential, destination = True, None
+
+            if consequential or forced or broad or ambiguous:
                 action = "git.history.rewrite"
-                summary = f"rewrite public history on {branch}"
+                if destination:
+                    summary = f"rewrite public history on {destination}"
+                elif ambiguous or broad:
+                    summary = "push with an ambiguous or broad refspec (failing closed)"
+                else:
+                    summary = "rewrite public history"
                 supervision = SupervisoryMetadata(
                     reversibility=self._reversibility(action),
                     private_to_public=True,
@@ -223,7 +369,7 @@ class ActionAdapter:
                 )
             else:
                 action = "git.push.feature"
-                summary = f"push feature branch {branch}"
+                summary = f"push feature branch {destination}"
                 supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
             return action, {"repository": repo}, summary, supervision
 
@@ -238,16 +384,6 @@ class ActionAdapter:
             return action, {"repository": repo}, summary, supervision
 
         raise ActionAdapterError(f"unsupported git subcommand: {subcommand!r}")
-
-    @staticmethod
-    def _push_branch(argv: list[str]) -> str:
-        positional = [item for item in argv[1:] if not item.startswith("-")]
-        if len(positional) >= 2:
-            return positional[-1].replace("refs/heads/", "")
-        if len(positional) == 1:
-            # ``git push origin`` with no ref: treat conservatively as shared.
-            return "main"
-        return "main"
 
     def _normalize_upload(
         self, operation: dict[str, Any]

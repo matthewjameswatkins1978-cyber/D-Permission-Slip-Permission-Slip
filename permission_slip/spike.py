@@ -146,17 +146,18 @@ class PermissionSlip:
     def run(
         self,
         operation: dict[str, Any],
+        actor_id: str,
         *,
         approval: str | None = None,
         simulate_failure: bool = False,
         between_prepare_and_commit: Callable[["PermissionSlip", dict[str, Any]], None] | None = None,
     ) -> Receipt:
         try:
-            normalized = self.adapter.normalize(operation)
+            normalized = self.adapter.normalize(operation, actor_id)
         except UntrustedActorError as exc:
             return Receipt(
                 action=operation.get("tool", "unknown"),
-                actor=str(operation.get("actor", "unknown")),
+                actor=str(actor_id),
                 decision=DECISION_DENY,
                 reason="untrusted_actor",
                 error=str(exc),
@@ -165,7 +166,7 @@ class PermissionSlip:
         except ActionAdapterError as exc:
             return Receipt(
                 action=operation.get("tool", "unknown"),
-                actor=str(operation.get("actor", "unknown")),
+                actor=str(actor_id),
                 decision=DECISION_DENY,
                 reason="unmappable_operation",
                 error=str(exc),
@@ -182,12 +183,14 @@ class PermissionSlip:
     def approve(
         self,
         operation: dict[str, Any],
+        actor_id: str,
         *,
         simulate_failure: bool = False,
         between_prepare_and_commit: Callable[["PermissionSlip", dict[str, Any]], None] | None = None,
     ) -> Receipt:
         return self.run(
             operation,
+            actor_id,
             approval="approve",
             simulate_failure=simulate_failure,
             between_prepare_and_commit=between_prepare_and_commit,
