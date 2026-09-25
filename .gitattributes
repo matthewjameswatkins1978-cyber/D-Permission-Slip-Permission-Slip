@@ -1,0 +1,6 @@
+# Keep text files LF in the working tree so compiled fixture output is
+# byte-reproducible across platforms (see tests/test_vertical_spike.py).
+* text=auto eol=lf
+*.ps1 text eol=lf
+*.json text eol=lf
+*.tether text eol=lf
