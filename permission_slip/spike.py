@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -33,13 +34,38 @@ from . import doctrine as doctrine_module
 from . import doctrine_contract, doctrine_store
 from .actions import ActionAdapter, ActionAdapterError, NormalizedAction, UntrustedActorError
 from .explanations import explain
-from .executor import FixtureExecutor, FixtureFailure
+from .executor import FixtureExecutor, FixtureFailure, STATUS_SUCCEEDED
+from .host_context import TrustedHostContext
+from .observability import (
+    AUTHORITY_COMMIT_RESULT,
+    AUTHORITY_COMMIT_SENT,
+    AUTHORITY_OUTCOME_RESULT,
+    AUTHORITY_OUTCOME_SENT,
+    AUTHORITY_PREPARE_RESULT,
+    AUTHORITY_PREPARE_SENT,
+    EXECUTION_RESULT,
+    EXECUTION_STARTED,
+    HUMAN_APPROVAL_RECORDED,
+    HUMAN_APPROVAL_REQUESTED,
+    NORMALIZATION_FAILED,
+    NORMALIZATION_STARTED,
+    NORMALIZATION_SUCCEEDED,
+    RUN_STARTED,
+    TRUSTED_CONTEXT_REVALIDATION_RESULT,
+    TRUSTED_CONTEXT_REVALIDATION_STARTED,
+    BaseRecorder,
+    NullRecorder,
+)
 from .tethers_client import GateSession
 
 DECISION_ALLOW = "ALLOW"
 DECISION_ASK = "ASK"
 DECISION_DENY = "DENY"
 DECISION_UNAVAILABLE = "UNAVAILABLE"
+
+#: Actor identity always comes from trusted harness context, never from the
+#: operation document. Recorded so a trace can say *where* identity came from.
+ACTOR_IDENTITY_SOURCE = "trusted_harness_context"
 
 
 @dataclass
@@ -57,6 +83,10 @@ class Receipt:
     ignored_caller_claims: tuple[str, ...] = ()
     normalized: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    #: Forensic identity so a receipt can be found again without reenacting it.
+    run_id: str | None = None
+    session_id: str | None = None
+    doctrine_digest: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +103,9 @@ class Receipt:
             "ignored_caller_claims": list(self.ignored_caller_claims),
             "normalized": dict(self.normalized),
             "error": self.error,
+            "run_id": self.run_id,
+            "session_id": self.session_id,
+            "doctrine_digest": self.doctrine_digest,
         }
 
 
@@ -104,6 +137,9 @@ class PermissionSlip:
         repo_root: str | Path | None = None,
         paths=None,
         allow_unverified_tethers_for_development: bool = False,
+        executor=None,
+        host_context: TrustedHostContext | None = None,
+        recorder: BaseRecorder | None = None,
     ):
         self.doctrine_path = Path(doctrine_path).resolve()
         self._initialise(
@@ -112,6 +148,9 @@ class PermissionSlip:
             repo_root=repo_root,
             paths=paths,
             allow_unverified_tethers_for_development=allow_unverified_tethers_for_development,
+            executor=executor,
+            host_context=host_context,
+            recorder=recorder,
         )
 
     @classmethod
@@ -123,12 +162,15 @@ class PermissionSlip:
         repo_root: str | Path | None = None,
         paths=None,
         allow_unverified_tethers_for_development: bool = False,
+        executor=None,
+        host_context: TrustedHostContext | None = None,
+        recorder: BaseRecorder | None = None,
     ) -> "PermissionSlip":
         """Construct from the **adopted** doctrine in Permission Slip state.
 
         This is the only constructor that reads the store. It resolves the
         state root, loads the active pointer's candidate, re-validates it,
-        re-derives its digest and requires exact agreement before anything is
+        re-derives the digest and requires exact agreement before anything is
         compiled. No candidate ever becomes active by being imported, and the
         existing ``PermissionSlip(doctrine_path=...)`` route keeps its exact
         meaning -- neither route implies the other.
@@ -143,6 +185,9 @@ class PermissionSlip:
             repo_root=repo_root,
             paths=paths,
             allow_unverified_tethers_for_development=allow_unverified_tethers_for_development,
+            executor=executor,
+            host_context=host_context,
+            recorder=recorder,
         )
         return instance
 
@@ -154,6 +199,9 @@ class PermissionSlip:
         repo_root: str | Path | None,
         paths,
         allow_unverified_tethers_for_development: bool,
+        executor=None,
+        host_context: TrustedHostContext | None = None,
+        recorder: BaseRecorder | None = None,
     ) -> None:
         self.doctrine = doctrine
         if not hasattr(self, "doctrine_digest"):
@@ -165,8 +213,18 @@ class PermissionSlip:
         self.fixture_dir = self.workdir / "tethers-fixture"
         self.fixture = doctrine_module.compile_doctrine(self.doctrine, self.fixture_dir)
 
-        self.adapter = ActionAdapter(self.doctrine, repo_root=self.repo_root)
-        self.executor = FixtureExecutor(self.repo_root)
+        # Trusted host facts are established here, from trusted constructor
+        # arguments -- never from an operation document.
+        self.host_context = host_context or TrustedHostContext.for_normalisation(
+            repo_root=self.repo_root, doctrine=self.doctrine
+        )
+        self.adapter = ActionAdapter(self.doctrine, host_context=self.host_context)
+
+        # The fixture executor stays the default. Selecting the real host
+        # executor is an explicit constructor decision, never a silent flip.
+        self.executor = FixtureExecutor(self.repo_root, host_context=self.host_context) if executor is None else executor
+        self.recorder: BaseRecorder = recorder if recorder is not None else NullRecorder()
+        self._current_run_id: str | None = None
 
         # Refuses unverified / development / provenance-mismatched installations
         # before any Gate process exists, unless explicitly opted in above.
@@ -178,6 +236,32 @@ class PermissionSlip:
             allow_unverified_for_development=allow_unverified_tethers_for_development,
         )
         self.hello_result: dict[str, Any] | None = None
+
+    # -- session facts for the trace --------------------------------------
+
+    def session_facts(self) -> dict[str, Any]:
+        """Safe identities only. Never a payload, credential or environment value."""
+        from . import __version__
+        from .tethers_install import AUTHORITY_PROTOCOL
+
+        hello = self.hello_result or {}
+        return {
+            "permission_slip_version": str(__version__),
+            "tethers_product_version": str(
+                hello.get("product_version") or hello.get("version") or "unknown"
+            ),
+            "authority_protocol": str(hello.get("protocol") or AUTHORITY_PROTOCOL),
+            "doctrine_digest": self.doctrine_digest,
+            "trusted_host_context_digest": self.host_context.digest(),
+            "executor_mode": "real-host" if getattr(self.executor, "is_real", False) else "fixture",
+            "python_version": sys.version.split()[0],
+            "platform": sys.platform,
+            "supported_executor_modes": ["fixture", "real-host"],
+        }
+
+    @property
+    def is_real_execution(self) -> bool:
+        return bool(getattr(self.executor, "is_real", False))
 
     # -- session lifecycle -------------------------------------------------
 
@@ -231,9 +315,84 @@ class PermissionSlip:
         frozen_operation_digest = operation_digest(operation)
         frozen_actor_id = actor_id
 
+        run_id = self.recorder.start_run(
+            operation_digest=frozen_operation_digest,
+            actor=str(actor_id),
+            actor_identity_source=ACTOR_IDENTITY_SOURCE,
+            tool=str(operation.get("tool")) if isinstance(operation, dict) else None,
+            doctrine_digest=self.doctrine_digest,
+            host_context_digest=self.host_context.digest(),
+            canonical_repository=self.host_context.canonical_repository,
+            executor_mode="real-host" if self.is_real_execution else "fixture",
+        )
+        self._current_run_id = run_id
+        self.recorder.emit(
+            run_id,
+            RUN_STARTED,
+            tool=str(operation.get("tool")) if isinstance(operation, dict) else None,
+            session=self.session_facts(),
+        )
+
+        receipt: Receipt | None = None
+        try:
+            if self.is_real_execution and not self.recorder.writable:
+                # No recorder: no real effect. Refuse before the Gate is even
+                # asked, so nothing consequential can be left unrecorded.
+                receipt = Receipt(
+                    action=str(operation.get("tool", "unknown")),
+                    actor=str(actor_id),
+                    decision=DECISION_DENY,
+                    reason="no_trace_recorder",
+                    error="real execution requires a writable trace/run record",
+                    ignored_caller_claims=ActionAdapter._caller_claims(operation),
+                    run_id=run_id,
+                    session_id=self.recorder.session_id,
+                    doctrine_digest=self.doctrine_digest,
+                )
+                return receipt
+
+            receipt = self._normalize_and_adjudicate(
+                operation,
+                actor_id=frozen_actor_id,
+                frozen_operation_digest=frozen_operation_digest,
+                approval=approval,
+                simulate_failure=simulate_failure,
+                between_prepare_and_commit=between_prepare_and_commit,
+            )
+            return receipt
+        finally:
+            payload = receipt.as_dict() if receipt is not None else {
+                "action": str(operation.get("tool", "unknown")) if isinstance(operation, dict) else "unknown",
+                "actor": str(actor_id),
+                "decision": DECISION_UNAVAILABLE,
+                "reason": "internal_error",
+                "executed": False,
+            }
+            payload.setdefault("run_id", run_id)
+            payload.setdefault("session_id", self.recorder.session_id)
+            payload.setdefault("doctrine_digest", self.doctrine_digest)
+            self.recorder.finish(run_id, receipt=payload, session=self.session_facts())
+            self._current_run_id = None
+
+    def _normalize_and_adjudicate(
+        self,
+        operation: dict[str, Any],
+        *,
+        actor_id: str,
+        frozen_operation_digest: str,
+        approval: str | None,
+        simulate_failure: bool,
+        between_prepare_and_commit: Callable[["PermissionSlip", dict[str, Any]], None] | None,
+    ) -> Receipt:
+        run_id = self._current_run_id
+        self.recorder.emit(run_id, NORMALIZATION_STARTED, actor=str(actor_id))
+        self.recorder.stage(run_id, "normalization")
         try:
             normalized = self.adapter.normalize(operation, actor_id)
         except UntrustedActorError as exc:
+            self.recorder.emit(
+                run_id, NORMALIZATION_FAILED, reason="untrusted_actor", error=str(exc)
+            )
             return Receipt(
                 action=operation.get("tool", "unknown"),
                 actor=str(actor_id),
@@ -241,8 +400,14 @@ class PermissionSlip:
                 reason="untrusted_actor",
                 error=str(exc),
                 ignored_caller_claims=ActionAdapter._caller_claims(operation),
+                run_id=run_id,
+                session_id=self.recorder.session_id,
+                doctrine_digest=self.doctrine_digest,
             )
         except ActionAdapterError as exc:
+            self.recorder.emit(
+                run_id, NORMALIZATION_FAILED, reason="unmappable_operation", error=str(exc)
+            )
             return Receipt(
                 action=operation.get("tool", "unknown"),
                 actor=str(actor_id),
@@ -250,12 +415,26 @@ class PermissionSlip:
                 reason="unmappable_operation",
                 error=str(exc),
                 ignored_caller_claims=ActionAdapter._caller_claims(operation),
+                run_id=run_id,
+                session_id=self.recorder.session_id,
+                doctrine_digest=self.doctrine_digest,
             )
+        self.recorder.stage(run_id, "normalization")
+        self.recorder.emit(
+            run_id,
+            NORMALIZATION_SUCCEEDED,
+            action=normalized.action,
+            actor=normalized.actor_id,
+            normalized_arguments=dict(normalized.arguments),
+            facts=dict(normalized.facts),
+            ignored_caller_claims=list(normalized.ignored_caller_claims),
+            summary=normalized.summary,
+        )
 
         return self._adjudicate(
             normalized,
             operation=operation,
-            actor_id=frozen_actor_id,
+            actor_id=actor_id,
             frozen_operation_digest=frozen_operation_digest,
             approval=approval,
             simulate_failure=simulate_failure,
@@ -315,6 +494,7 @@ class PermissionSlip:
         evaluation_id = f"eval-{uuid.uuid4().hex}"
         payload = self.prepare_payload(normalized, evaluation_id)
         capability = self._capability(normalized.action)
+        run_id = self._current_run_id
 
         receipt = Receipt(
             action=normalized.action,
@@ -323,8 +503,20 @@ class PermissionSlip:
             reason="not_prepared",
             ignored_caller_claims=normalized.ignored_caller_claims,
             normalized=normalized.as_dict(),
+            run_id=run_id,
+            session_id=self.recorder.session_id,
+            doctrine_digest=self.doctrine_digest,
         )
 
+        self.recorder.stage(run_id, "prepare")
+        self.recorder.emit(
+            run_id,
+            AUTHORITY_PREPARE_SENT,
+            evaluation_id=evaluation_id,
+            tether_id=payload["tether"]["id"],
+            tether_version=payload["tether"]["version"],
+            action=normalized.action,
+        )
         try:
             prepared = self._session.prepare(
                 action_id=payload["action_id"],
@@ -338,6 +530,10 @@ class PermissionSlip:
             )
         except Exception as exc:  # GateError or transport
             code = getattr(exc, "code", "prepare.failed")
+            self.recorder.emit(
+                run_id, AUTHORITY_PREPARE_RESULT, status="error", code=code, error=str(exc)
+            )
+            self.recorder.stage(run_id, "prepare")
             if code == "prepare.no_actions":
                 receipt.decision = DECISION_DENY
                 receipt.reason = "no_plan"
@@ -346,6 +542,16 @@ class PermissionSlip:
                 receipt.reason = code
             receipt.error = str(exc)
             return receipt
+
+        self.recorder.stage(run_id, "prepare")
+        self.recorder.emit(
+            run_id,
+            AUTHORITY_PREPARE_RESULT,
+            status="ok",
+            decision=prepared.get("decision"),
+            reason=prepared.get("reason", ""),
+            prepared_id=prepared.get("prepared_id"),
+        )
 
         receipt.reason = prepared.get("reason", "")
         decision = prepared["decision"]
@@ -364,10 +570,28 @@ class PermissionSlip:
             approval_info = prepared.get("approval", {})
             receipt.approval_id = approval_info.get("approval_id")
             receipt.explanation = explain(normalized)
+            self.recorder.emit(
+                run_id,
+                HUMAN_APPROVAL_REQUESTED,
+                approval_id=receipt.approval_id,
+                action=normalized.action,
+            )
             if approval == "approve":
                 self._session.approval_decision(receipt.approval_id, "approve")
+                self.recorder.emit(
+                    run_id,
+                    HUMAN_APPROVAL_RECORDED,
+                    approval_id=receipt.approval_id,
+                    decision="approve",
+                )
             elif approval == "deny":
                 self._session.approval_decision(receipt.approval_id, "deny")
+                self.recorder.emit(
+                    run_id,
+                    HUMAN_APPROVAL_RECORDED,
+                    approval_id=receipt.approval_id,
+                    decision="deny",
+                )
                 receipt.decision = DECISION_DENY
                 receipt.reason = "human_denied"
                 return receipt
@@ -445,20 +669,34 @@ class PermissionSlip:
         frozen_operation_digest,
         simulate_failure,
     ):
+        run_id = self._current_run_id
+        self.recorder.emit(run_id, TRUSTED_CONTEXT_REVALIDATION_STARTED)
+        self.recorder.stage(run_id, "revalidation")
         stale = self.revalidate_trusted_context(
             normalized, operation, actor_id, frozen_operation_digest
         )
+        self.recorder.stage(run_id, "revalidation")
         if stale is not None:
             # Do not COMMIT the stale prepared action, and do not execute.
+            self.recorder.emit(
+                run_id, TRUSTED_CONTEXT_REVALIDATION_RESULT, ok=False, reason=stale
+            )
             receipt.decision = DECISION_DENY
             receipt.reason = "trusted_context_changed"
             receipt.error = stale
             return receipt
+        self.recorder.emit(run_id, TRUSTED_CONTEXT_REVALIDATION_RESULT, ok=True)
 
+        self.recorder.stage(run_id, "commit")
+        self.recorder.emit(run_id, AUTHORITY_COMMIT_SENT, prepared_id=prepared["prepared_id"])
         try:
             dispatch = self._session.commit(prepared["prepared_id"])
         except Exception as exc:
             code = getattr(exc, "code", "commit.failed")
+            self.recorder.emit(
+                run_id, AUTHORITY_COMMIT_RESULT, status="error", code=code, error=str(exc)
+            )
+            self.recorder.stage(run_id, "commit")
             if code.startswith("commit.deny") or code in (
                 "commit.approval_required",
                 "commit.approval_not_ready",
@@ -470,6 +708,10 @@ class PermissionSlip:
             receipt.error = str(exc)
             return receipt
 
+        self.recorder.stage(run_id, "commit")
+        self.recorder.emit(
+            run_id, AUTHORITY_COMMIT_RESULT, status="ok", execution_id=dispatch.get("execution_id")
+        )
         receipt.decision = DECISION_ALLOW
         receipt.execution_id = dispatch.get("execution_id")
         if prepared.get("approval", {}).get("approval_id"):
@@ -477,27 +719,94 @@ class PermissionSlip:
         else:
             receipt.reason = "current_policy_allow"
 
+        self.recorder.emit(
+            run_id,
+            EXECUTION_STARTED,
+            executor_mode="real-host" if self.is_real_execution else "fixture",
+            action=normalized.action,
+            execution_id=receipt.execution_id,
+        )
+        self.recorder.stage(run_id, "execution")
         try:
             result = self.executor.execute(normalized, simulate_failure=simulate_failure)
         except FixtureFailure as exc:
+            self.recorder.stage(run_id, "execution")
+            status = "uncertain" if exc.partial else "failed"
             receipt.executed = True
+            receipt.outcome = status
+            receipt.error = str(exc)
+            self.recorder.emit(
+                run_id,
+                EXECUTION_RESULT,
+                status=status,
+                executed=True,
+                error=str(exc),
+            )
+            self._report_outcome(receipt, dispatch, status, error=str(exc))
+            return receipt
+        except Exception as exc:
+            # A real executor refusing (unsupported effect, failed revalidation,
+            # missing recorder) is a truthful failed execution, not a crash.
+            self.recorder.stage(run_id, "execution")
+            receipt.executed = False
             receipt.outcome = "failed"
             receipt.error = str(exc)
-            self._session.outcome(
-                dispatch["execution_id"],
-                "failed" if not exc.partial else "uncertain",
-                error=str(exc),
-                external_execution_identity=f"fixture-failed-{normalized.action}",
+            self.recorder.emit(
+                run_id, EXECUTION_RESULT, status="failed", executed=False, error=str(exc)
             )
+            self._report_outcome(receipt, dispatch, "failed", error=str(exc))
             return receipt
 
-        receipt.executed = True
+        self.recorder.stage(run_id, "execution")
+        status = result.status
+        receipt.executed = result.executed
         receipt.effects = list(result.effects)
-        outcome = self._session.outcome(
-            dispatch["execution_id"],
-            "succeeded",
-            result=result.output,
-            external_execution_identity=result.external_execution_identity,
+        self.recorder.emit(
+            run_id,
+            EXECUTION_RESULT,
+            status=status,
+            executed=result.executed,
+            effects=list(result.effects),
+            detail=dict(result.detail),
         )
-        receipt.outcome = outcome.get("status", "succeeded")
+        self._report_outcome(
+            receipt,
+            dispatch,
+            status,
+            result=result.output,
+            external_identity=result.external_execution_identity,
+        )
         return receipt
+
+    def _report_outcome(
+        self,
+        receipt,
+        dispatch,
+        status: str,
+        *,
+        error: str | None = None,
+        result=None,
+        external_identity: str = "",
+    ) -> None:
+        """Tell Tethers exactly what happened in the physical world."""
+        run_id = self._current_run_id
+        self.recorder.stage(run_id, "outcome")
+        self.recorder.emit(run_id, AUTHORITY_OUTCOME_SENT, status=status)
+        try:
+            response = self._session.outcome(
+                dispatch["execution_id"],
+                status,
+                result=result,
+                error=error,
+                external_execution_identity=external_identity,
+            )
+        except Exception as exc:  # pragma: no cover - transport failure after effect
+            receipt.error = receipt.error or str(exc)
+            receipt.outcome = status
+            return
+        finally:
+            self.recorder.stage(run_id, "outcome")
+        self.recorder.emit(
+            run_id, AUTHORITY_OUTCOME_RESULT, status=response.get("status", status)
+        )
+        receipt.outcome = response.get("status", status)

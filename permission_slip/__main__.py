@@ -18,6 +18,16 @@ CLI. It owns a small, explicit surface:
     only ``adopt`` -- with an explicit expected-current digest -- may change
     which doctrine is active.
 
+``permission-slip inspect --since 24h [--json]``
+    Deterministic burn-in report over local run summaries. Mechanical
+    attention rules, no anomaly score.
+
+``permission-slip trace --run <run-id> [--json]``
+    The ordered event sequence for one run, without dumping secrets.
+
+``permission-slip debug bundle --run <run-id> --output <file.zip>``
+    Sanitized evidence for handing to a reviewer.
+
 Doctrine failures render ``INVALID DOCTRINE``, ``CONFLICT`` or ``NOT READY``
 with the offending path and reason, and exit nonzero, instead of reaching the
 human as a traceback.
@@ -41,11 +51,12 @@ from .doctor import (
     run_doctor,
 )
 from . import doctrine as doctrine_module
-from . import doctrine_export, doctrine_store
+from . import doctrine_export, doctrine_store, observability
 from .doctrine_contract import canonical_digest
 from .doctrine_contract import DoctrineValidationError
 from .doctrine_diff import DIFF_SCHEMA, diff_doctrines, render_human as render_diff
 from .doctrine_store import AdoptionConflict, DoctrineStateError, NoActiveDoctrine
+from .observability import INSPECT_SCHEMA, build_debug_bundle, inspect_runs, render_inspect_human
 from .state import tethers_host_data_root
 from .tethers_client import TethersUnavailable
 from .tethers_install import (
@@ -58,9 +69,26 @@ from .tethers_install import (
 IMPORT_RESULT_SCHEMA = "permission-slip.doctrine-import/1"
 ACTIVE_REPORT_SCHEMA = "permission-slip.doctrine-active/1"
 ADOPT_RESULT_SCHEMA = "permission-slip.doctrine-adopt/1"
+TRACE_VIEW_SCHEMA = "permission-slip.trace-view/1"
 
 #: Diff arguments may name a file or the literal adopted doctrine.
 ACTIVE_TOKEN = "active"
+
+
+def _parse_since(value: str) -> float:
+    """``24h`` / ``90m`` / ``7d`` -> hours. Anything else is a usage error."""
+    text = str(value).strip().lower()
+    if not text:
+        raise ValueError("empty --since value")
+    unit = text[-1]
+    magnitude = text[:-1] if unit in "hmd" else text
+    try:
+        amount = float(magnitude)
+    except ValueError:
+        raise ValueError(f"cannot read --since {value!r}; use forms like 24h, 90m, 7d") from None
+    if amount < 0:
+        raise ValueError("--since must not be negative")
+    return {"h": 1.0, "m": 1.0 / 60.0, "d": 24.0}.get(unit, 1.0) * amount
 
 
 def _print_setup(report: dict, as_json: bool) -> None:
@@ -194,6 +222,93 @@ def _run_doctrine(args: argparse.Namespace) -> int:
         return _doctrine_failure("NOT READY", str(exc))
 
 
+# -- observability ---------------------------------------------------------
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    try:
+        hours = _parse_since(args.since)
+    except ValueError as exc:
+        print("NOT READY")
+        print(f"FAIL: {exc}")
+        return 1
+    report = inspect_runs(since_hours=hours)
+    if args.json:
+        sys.stdout.write(render_json(report))
+        return 0
+    print(render_inspect_human(report))
+    return 0
+
+
+def _read_events(run_id: str) -> list[dict]:
+    directory = observability.run_dir(None, run_id)
+    path = directory / "events.jsonl"
+    if not path.is_file():
+        raise FileNotFoundError(f"no trace for run {run_id}")
+    events: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            # A malformed line is shown as such rather than aborting the view:
+            # a damaged trace must stay inspectable.
+            events.append({"event": "<malformed>", "raw": line[:200]})
+    return events
+
+
+def _cmd_trace(args: argparse.Namespace) -> int:
+    try:
+        events = _read_events(args.run)
+    except (FileNotFoundError, OSError) as exc:
+        print("NOT READY")
+        print(f"FAIL: {exc}")
+        return 1
+    if args.json:
+        sys.stdout.write(
+            render_json({"schema": TRACE_VIEW_SCHEMA, "run_id": args.run, "events": events})
+        )
+        return 0
+    print(f"TRACE {args.run}")
+    for event in events:
+        offset = event.get("monotonic_offset_ms", "?")
+        name = event.get("event", "<unknown>")
+        details = " ".join(
+            f"{key}={value}"
+            for key, value in sorted(event.items())
+            if key
+            not in (
+                "schema",
+                "session_id",
+                "run_id",
+                "event",
+                "timestamp_utc",
+                "monotonic_offset_ms",
+            )
+            and not isinstance(value, (dict, list))
+        )
+        print(f"  {offset:>8}ms  {name}" + (f"  {details}" if details else ""))
+    return 0
+
+
+def _cmd_debug_bundle(args: argparse.Namespace) -> int:
+    try:
+        output = build_debug_bundle(args.run, args.output)
+    except FileNotFoundError as exc:
+        print("NOT READY")
+        print(f"FAIL: {exc}")
+        return 1
+    except OSError as exc:
+        print("NOT READY")
+        print(f"FAIL: {exc}")
+        return 1
+    print(f"Wrote {output}")
+    print(f"  run {args.run}")
+    print("  sanitized: events, summary, receipt and safe identities only")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="permission-slip",
@@ -289,6 +404,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--json", action="store_true", help=f"Emit the {ADOPT_RESULT_SCHEMA} envelope."
     )
 
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="Deterministic burn-in report over local run summaries.",
+    )
+    inspect_parser.add_argument(
+        "--since",
+        default="24h",
+        help="Look-back window such as 24h, 90m or 7d (default: 24h).",
+    )
+    inspect_parser.add_argument(
+        "--json", action="store_true", help=f"Emit the {INSPECT_SCHEMA} envelope."
+    )
+
+    trace_parser = subparsers.add_parser(
+        "trace", help="Show the ordered event sequence for one run."
+    )
+    trace_parser.add_argument("--run", required=True, help="run id, e.g. psr_<uuid>")
+    trace_parser.add_argument(
+        "--json", action="store_true", help=f"Emit the {TRACE_VIEW_SCHEMA} envelope."
+    )
+
+    debug_parser = subparsers.add_parser("debug", help="Debug helpers for one run.")
+    debug_commands = debug_parser.add_subparsers(dest="debug_command", required=True)
+    bundle_parser = debug_commands.add_parser(
+        "bundle", help="Write a sanitized evidence bundle for one run."
+    )
+    bundle_parser.add_argument("--run", required=True, help="run id, e.g. psr_<uuid>")
+    bundle_parser.add_argument("--output", required=True, help="zip file to write")
+
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if args.command == "doctor":
@@ -326,6 +470,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "doctrine":
         return _run_doctrine(args)
+
+    if args.command == "inspect":
+        return _cmd_inspect(args)
+
+    if args.command == "trace":
+        return _cmd_trace(args)
+
+    if args.command == "debug":
+        return _cmd_debug_bundle(args)
 
     return 2  # pragma: no cover - argparse enforces a subcommand
 
