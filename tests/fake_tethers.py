@@ -202,10 +202,19 @@ def make_fake_gate(
 
 
 def make_engine(directory: Path, name: str = "tethers-engine") -> Path:
-    """Write a dummy matching engine file (the fake Gate ignores it)."""
+    """Write a dummy matching engine file (the fake Gate ignores it).
+
+    The shipped POSIX bundle carries an executable ``tethers-engine``, so the
+    fake models that: production ``_require_file()`` correctly refuses a
+    non-executable engine when ``TETHERS_ENGINE_BIN`` names it explicitly.
+    Permissions are filesystem metadata, so the ``SHA256SUMS`` fixture is
+    unaffected.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     engine = directory / (name + (".exe" if sys.platform == "win32" else ""))
     engine.write_bytes(b"fake-tethers-core-engine\n")
+    if sys.platform != "win32":
+        engine.chmod(0o755)
     return engine
 
 
