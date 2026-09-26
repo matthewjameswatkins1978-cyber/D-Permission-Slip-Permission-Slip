@@ -17,6 +17,7 @@ retained untouched there.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -27,7 +28,9 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from permission_slip import adoption_lock as adoption_lock_module
 from permission_slip.adoption_lock import (
+    ADOPTION_LOCK_NAME,
     AdoptionLockTimeout,
     adoption_lock,
     adoption_lock_path,
@@ -35,6 +38,7 @@ from permission_slip.adoption_lock import (
 from permission_slip.doctrine_export import encode_export
 from permission_slip.doctrine_store import (
     AdoptionConflict,
+    DoctrineStateError,
     adopt,
     import_export,
     load_active_doctrine,
@@ -355,6 +359,33 @@ class CrashRecoveryTests(LockHarness):
         self.assertTrue(adoption_lock_path(self.store).is_file())
         with adoption_lock(self.store, timeout=5.0):
             pass
+
+
+class LockPortabilityTests(unittest.TestCase):
+    """The lock must import and behave on every supported interpreter.
+
+    ``errno.EDEADLOCK`` is Linux-only, which is exactly the kind of thing that
+    passes everywhere a developer happens to run and fails on the first macOS
+    runner. These assertions are the portability guard.
+    """
+
+    def test_the_contention_errno_set_is_portable_and_non_empty(self) -> None:
+        codes = adoption_lock_module._CONTENTION_ERRNOS
+        self.assertTrue(codes, "a contention set that matches nothing would spin forever")
+        for name in ("EACCES", "EAGAIN"):
+            self.assertIn(getattr(errno, name), codes)
+        self.assertTrue(all(isinstance(code, int) for code in codes))
+
+    def test_a_lock_timeout_reaches_the_cli_as_not_ready_not_as_a_conflict(self) -> None:
+        # OSError -> the CLI's NOT READY branch; and specifically not a
+        # DoctrineStateError, because a timeout says nothing about state.
+        self.assertTrue(issubclass(AdoptionLockTimeout, TimeoutError))
+        self.assertTrue(issubclass(AdoptionLockTimeout, OSError))
+        self.assertFalse(issubclass(AdoptionLockTimeout, DoctrineStateError))
+        self.assertFalse(issubclass(AdoptionLockTimeout, AdoptionConflict))
+
+    def test_the_lock_file_name_is_the_agreed_one(self) -> None:
+        self.assertEqual(ADOPTION_LOCK_NAME, ".adoption.lock")
 
 
 if __name__ == "__main__":

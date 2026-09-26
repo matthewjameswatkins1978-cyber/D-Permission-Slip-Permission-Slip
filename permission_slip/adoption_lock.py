@@ -51,14 +51,23 @@ DEFAULT_POLL_SECONDS = 0.005
 #: Errnos that mean "somebody else holds it", and nothing worse. Anything else
 #: is a genuine failure and is re-raised rather than retried forever -- it is
 #: better to fail loudly than to spin on a broken descriptor.
+#:
+#: Resolved through ``getattr`` because the names are not portable: macOS has
+#: ``EDEADLK`` and no ``EDEADLOCK``, Linux has both, Windows has neither of the
+#: POSIX spellings for every one of these. A missing name simply contributes
+#: nothing, and the set is never empty because ``EACCES``/``EAGAIN`` are
+#: universal.
 _CONTENTION_ERRNOS = frozenset(
-    {
-        errno.EACCES,
-        errno.EAGAIN,
-        errno.EDEADLOCK,
-        errno.EWOULDBLOCK,
-        errno.EINTR,
-    }
+    code
+    for code in (
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EAGAIN", None),
+        getattr(errno, "EWOULDBLOCK", None),
+        getattr(errno, "EDEADLOCK", None),
+        getattr(errno, "EDEADLK", None),
+        getattr(errno, "EINTR", None),
+    )
+    if code is not None
 )
 
 
