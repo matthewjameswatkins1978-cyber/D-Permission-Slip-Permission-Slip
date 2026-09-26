@@ -62,6 +62,7 @@ Layout:
 | `permission_slip/doctrine.py` | Compiles a contract-valid doctrine into Tethers fixtures |
 | `permission_slip/doctrine_export.py` | Portable export/import envelope (a doctrine and its digest, nothing else) |
 | `permission_slip/doctrine_store.py` | State-owned candidates, active pointer, explicit adoption |
+| `permission_slip/adoption_lock.py` | One cross-process advisory lock around the adoption decision |
 | `permission_slip/doctrine_diff.py` | Domain-aware doctrine diff: consequential vs presentation |
 | `permission_slip/actions.py` | Trusted action adapter / trust boundary |
 | `permission_slip/tethers_install.py` | Tethers product discovery, identity, provenance, provisioning |
@@ -107,6 +108,17 @@ candidate  ->  inspect  ->  diff  ->  explicit adopt
   `permission-slip doctrine adopt --candidate <digest> --expect-current <digest|none>`
   is the **only** operation that can change it. Adoption is a compare-and-swap:
   if the active doctrine is not exactly what the caller expected, it refuses.
+
+`os.replace` makes the pointer *write* atomic; it does not make
+`read -> compare -> write` atomic. So the whole adoption decision -- read the
+current digest, compare it, verify the candidate, replace the pointer -- runs
+while holding one cross-process advisory lock on
+`<state>/doctrine/.adoption.lock` (`fcntl.flock` on POSIX, `msvcrt.locking` on
+Windows). Two processes adopting from the same expected state therefore produce
+exactly one winner; every other one gets `CONFLICT`. The kernel releases that
+lock if the holder dies, and the lock file itself is inert -- existence is never
+ownership -- so no crash can strand the store. Import, export, diff and reads do
+not take it; only adoption mutates the pointer, so only adoption needs it.
 
 Adoption proves *that* an explicit operation happened against the expected
 state. It does not yet prove *who* invoked it; identity-backed proof of the

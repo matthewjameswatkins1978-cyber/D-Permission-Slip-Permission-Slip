@@ -14,7 +14,11 @@ Three laws this module exists to enforce:
   creates (or re-verifies) a candidate file.
 * **Adoption is the only operation that writes ``active.json``**, and it is an
   explicit compare-and-swap: the caller must state the digest it believes is
-  currently active, and a stale statement is refused.
+  currently active, and a stale statement is refused. The compare-and-swap is
+  genuine across processes, not merely within one: the read, the comparison,
+  the candidate verification and the replacement all run under
+  :mod:`permission_slip.adoption_lock`, so two concurrent adopters from the
+  same expected state yield exactly one winner.
 * **Identity is the verified canonical digest, never a filename or an
   mtime.** Candidate filenames are derived from the digest, the active pointer
   stores a digest, and loading re-derives and re-checks the digest on every
@@ -37,6 +41,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from .adoption_lock import adoption_lock
 from .doctrine_contract import (
     DoctrineValidationError,
     canonical_digest,
@@ -270,6 +275,7 @@ def adopt(
     *,
     expect_current: str | None,
     state_root: str | Path | None = None,
+    lock_timeout: float | None = None,
 ) -> str:
     """Make ``candidate_digest`` active, but only if it is still ``expect_current``.
 
@@ -281,27 +287,43 @@ def adopt(
     The candidate is fully verified before the pointer is touched, and the
     pointer is replaced atomically, so a failure leaves the previous active
     doctrine active.
+
+    **The whole decision is one cross-process critical section.** ``os.replace``
+    makes the pointer write atomic; it does not make read -> compare -> write
+    atomic. So reading the current digest, comparing it with
+    ``expect_current``, verifying the candidate and replacing the pointer all
+    happen while holding the advisory lock described in
+    :mod:`permission_slip.adoption_lock`. Concurrent adopters from the same
+    expected state are therefore serialised: exactly one succeeds, and every
+    other one -- holding a now-stale expectation -- gets
+    :class:`AdoptionConflict` rather than a false success.
+
+    Only adoption takes that lock. Import, export, diff and reading the active
+    doctrine do not, and must not: they neither compare nor replace the pointer.
     """
     path = candidate_path(candidate_digest, state_root)  # validates digest format
     if expect_current is not None and not DIGEST_PATTERN.match(expect_current):
         raise DoctrineStateError(f"not a doctrine digest: {expect_current!r}")
 
-    current = read_active_digest(state_root)
-    if expect_current != current:
-        raise AdoptionConflict(
-            f"expected active doctrine {_describe(expect_current)} but the "
-            f"active doctrine is {_describe(current)}; refusing to adopt "
-            f"{candidate_digest}"
-        )
+    with adoption_lock(store_root(state_root), timeout=lock_timeout):
+        # Everything below is inside the lock. Moving the comparison above it
+        # would re-open the race this lock exists to close.
+        current = read_active_digest(state_root)
+        if expect_current != current:
+            raise AdoptionConflict(
+                f"expected active doctrine {_describe(expect_current)} but the "
+                f"active doctrine is {_describe(current)}; refusing to adopt "
+                f"{candidate_digest}"
+            )
 
-    if not path.is_file():
-        raise CandidateUnavailable(
-            f"candidate {candidate_digest} is not present at {path}"
-        )
-    # Verify before touching any state: a tampered candidate is never adopted.
-    _load_candidate_file(path, candidate_digest)
+        if not path.is_file():
+            raise CandidateUnavailable(
+                f"candidate {candidate_digest} is not present at {path}"
+            )
+        # Verify before touching any state: a tampered candidate is never adopted.
+        _load_candidate_file(path, candidate_digest)
 
-    _atomic_write(active_pointer_path(state_root), _pointer_bytes(candidate_digest))
+        _atomic_write(active_pointer_path(state_root), _pointer_bytes(candidate_digest))
     return candidate_digest
 
 
