@@ -1,0 +1,14 @@
+tether "permission slip money.promotional_credit.use"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+    and promo.within_bound is true
+
+do
+    money.promotional_credit.use
+        amount_cents: anchor.amount_cents
+        vendor: anchor.vendor
+        path: anchor.path

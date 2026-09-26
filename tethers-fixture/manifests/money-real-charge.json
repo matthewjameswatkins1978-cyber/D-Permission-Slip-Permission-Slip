@@ -1,0 +1,72 @@
+{
+  "manifest_format_version": "1.0",
+  "capability_name": "money.real_charge",
+  "capability_version": 1,
+  "title": "Permission Slip fixture: money.real_charge",
+  "description": "Create a real-money charge outside promotional credit.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "amount_cents": {
+        "type": "integer"
+      },
+      "vendor": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "amount_cents",
+      "vendor"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "additionalProperties": false
+  },
+  "effects": [
+    "money.charge"
+  ],
+  "permission_scope": null,
+  "reversibility": "irreversible",
+  "determinism": "deterministic",
+  "idempotency": {
+    "mechanism": "argument_key",
+    "argument_name": "idempotency_key",
+    "key_source": "evaluation_id/action_id"
+  },
+  "confirmation_policy": {
+    "standing_permitted": false,
+    "per_call_required": true
+  },
+  "timeout_ms": 5000,
+  "retry_policy": {
+    "max_retries": 0,
+    "backoff_ms": 500,
+    "allowed_on": [
+      "outcome_unknown"
+    ],
+    "requires_idempotency_proof": false
+  },
+  "provider": {
+    "identity": "permission-slip-fixture",
+    "display_name": "Permission Slip Fixture",
+    "identity_source": "host_configuration",
+    "description": "Test-only deterministic stdio provider."
+  },
+  "binding": {
+    "kind": "mcp",
+    "server_name": "permission-slip-fixture",
+    "tool_name": "fixture_money_real_charge",
+    "adapter": null
+  },
+  "digest": "sha256:0e668bd32d44267f7f9b41355681d5ca720838f9516f6a5587e94b3310728d35"
+}

@@ -1,0 +1,14 @@
+tether "permission slip git.history.rewrite"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+
+do
+    git.history.rewrite
+        repository: anchor.repository
+        remote_repository: anchor.remote_repository
+        destination_ref: anchor.destination_ref
+        push_effect: anchor.push_effect

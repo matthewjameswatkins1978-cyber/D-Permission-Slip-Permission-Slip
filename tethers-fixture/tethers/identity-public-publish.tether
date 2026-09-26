@@ -1,0 +1,11 @@
+tether "permission slip identity.public_publish"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+
+do
+    identity.public_publish
+        channel: anchor.channel

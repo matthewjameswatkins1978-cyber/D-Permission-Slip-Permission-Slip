@@ -1,0 +1,85 @@
+{
+  "manifest_format_version": "1.0",
+  "capability_name": "git.push.feature",
+  "capability_version": 1,
+  "title": "Permission Slip fixture: git.push.feature",
+  "description": "Push an ordinary non-force branch inside the feature/* namespace.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "repository": {
+        "type": "string"
+      },
+      "remote_repository": {
+        "type": "string"
+      },
+      "destination_ref": {
+        "type": "string"
+      },
+      "push_effect": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "repository",
+      "remote_repository",
+      "destination_ref",
+      "push_effect"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "additionalProperties": false
+  },
+  "effects": [
+    "git.remote.write"
+  ],
+  "permission_scope": {
+    "kind": "path_prefix",
+    "allowed_prefixes": [
+      "runtime/spike-workspace/"
+    ]
+  },
+  "reversibility": "compensatable",
+  "determinism": "deterministic",
+  "idempotency": {
+    "mechanism": "argument_key",
+    "argument_name": "idempotency_key",
+    "key_source": "evaluation_id/action_id"
+  },
+  "confirmation_policy": {
+    "standing_permitted": true,
+    "per_call_required": false
+  },
+  "timeout_ms": 5000,
+  "retry_policy": {
+    "max_retries": 0,
+    "backoff_ms": 500,
+    "allowed_on": [
+      "outcome_unknown"
+    ],
+    "requires_idempotency_proof": false
+  },
+  "provider": {
+    "identity": "permission-slip-fixture",
+    "display_name": "Permission Slip Fixture",
+    "identity_source": "host_configuration",
+    "description": "Test-only deterministic stdio provider."
+  },
+  "binding": {
+    "kind": "mcp",
+    "server_name": "permission-slip-fixture",
+    "tool_name": "fixture_git_push_feature",
+    "adapter": null
+  },
+  "digest": "sha256:1a51194ead12a011d81b12e09c33376f48d271caa992371a21066a2aaaa39686"
+}

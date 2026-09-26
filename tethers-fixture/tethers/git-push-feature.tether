@@ -1,0 +1,14 @@
+tether "permission slip git.push.feature"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+
+do
+    git.push.feature
+        repository: anchor.repository
+        remote_repository: anchor.remote_repository
+        destination_ref: anchor.destination_ref
+        push_effect: anchor.push_effect

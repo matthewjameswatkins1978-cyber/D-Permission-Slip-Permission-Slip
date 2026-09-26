@@ -1,0 +1,11 @@
+tether "permission slip dev.tests.run"
+
+anchor
+    permission_slip.action_requested
+
+when
+    actor.trusted is true
+
+do
+    dev.tests.run
+        path: anchor.path
