@@ -25,11 +25,8 @@ from permission_slip.spike import (
     DECISION_DENY,
     PermissionSlip,
 )
-from permission_slip.tethers_client import (
-    EXPECTED_ENGINE_SHA256,
-    REQUIRED_TETHERS_SHA,
-    discover_tethers,
-)
+from permission_slip.tethers_client import discover_tethers
+from permission_slip.tethers_install import AUTHORITY_PROTOCOL
 from tests.support import (
     CANONICAL_IDENTITY,
     CANONICAL_REPOSITORY,
@@ -639,12 +636,36 @@ class FixtureAndPinningTests(unittest.TestCase):
                 f"fixture drift in {rel}",
             )
 
-    def test_tethers_lineage_and_engine_artifact_are_pinned(self):
-        paths = discover_tethers()
-        self.assertEqual(paths.required_sha, REQUIRED_TETHERS_SHA)
-        self.assertIn(paths.verification, ("exact", "tree_equivalent"))
-        self.assertEqual(paths.engine_sha256, EXPECTED_ENGINE_SHA256)
-        self.assertTrue(paths.engine_matches_artifact)
+    def test_tethers_is_consumed_as_a_product_not_a_checkout(self):
+        # Product identity, pairing and provenance -- never source lineage.
+        installation = discover_tethers()
+        self.assertTrue(installation.gate_bin.is_file())
+        self.assertTrue(installation.engine_bin.is_file())
+        self.assertEqual(installation.authority_protocol, AUTHORITY_PROTOCOL)
+        self.assertRegex(installation.gate_sha256, r"^[0-9a-f]{64}$")
+        self.assertRegex(installation.engine_sha256, r"^[0-9a-f]{64}$")
+        self.assertIn(
+            installation.verification, ("verified", "unverified", "dev_override")
+        )
+        # Normal operation must never route through a Tethers source checkout.
+        self.assertNotEqual(installation.discovery_source, "dev_source_checkout")
+        self.assertFalse(installation.is_dev)
+
+        # No Git source lineage survives anywhere in the consumption boundary.
+        import permission_slip.tethers_client as client_module
+        import permission_slip.tethers_install as install_module
+
+        for module in (install_module, client_module):
+            source = Path(module.__file__).read_text(encoding="utf-8")
+            with self.subTest(module=module.__name__):
+                for retired in (
+                    "REQUIRED_TETHERS_SHA",
+                    "EXPECTED_ENGINE_SHA256",
+                    "tree_equivalent",
+                    "rev-parse",
+                    "7e29110319c554a6586865ec6c47a45498696d16",
+                ):
+                    self.assertNotIn(retired, source)
 
     def test_git_capabilities_bind_remote_and_effect_in_the_fixture(self):
         # The remote/effect fields must reach the action Tethers sees, not just

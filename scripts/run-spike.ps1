@@ -1,11 +1,15 @@
 <#
 .SYNOPSIS
-    Compile the doctrine and run the Permission Slip v0.1 vertical spike tests.
+    Compile the doctrine and run the Permission Slip test matrix.
 
 .DESCRIPTION
     Locates Python 3, compiles doctrine/matthew.v0.1.json into the committed
-    tethers-fixture/, prints the exact Tethers lineage being exercised, and runs
-    the full automated test matrix.
+    tethers-fixture/, prints the exact Tethers product identity being consumed,
+    and runs the full automated test matrix (v0.1 authority proofs plus the
+    0.2 product-consumption boundary).
+
+    This consumes an installed/released Tethers. It does not clone or build
+    Tethers; see scripts/bootstrap-tethers.ps1 for contributor-only tooling.
 #>
 [CmdletBinding()]
 param(
@@ -39,9 +43,15 @@ try {
 
     Write-Host "`n== Compiling doctrine into tethers-fixture =="
     & $Python -m permission_slip.doctrine "doctrine/matthew.v0.1.json" "tethers-fixture"
+    if ($LASTEXITCODE -ne 0) { throw "doctrine compilation failed" }
 
-    Write-Host "`n== Tethers lineage =="
-    & $Python -c "from permission_slip.tethers_client import discover_tethers; p=discover_tethers(); print('root:', p.root); print('required SHA:', p.required_sha); print('actual SHA:  ', p.actual_sha); print('verification:', p.verification); print('engine sha256:', p.engine_sha256); print('engine matches frozen R2 artifact:', p.engine_matches_artifact)"
+    Write-Host "`n== Tethers product identity =="
+    & $Python -c "from permission_slip.tethers_install import discover_tethers; p = discover_tethers(); print('gate:         ', p.gate_bin); print('engine:       ', p.engine_bin); print('install root: ', p.install_root); print('product:      ', p.product_version); print('protocol:     ', p.authority_protocol); print('discovery:    ', p.discovery_source, '/', p.engine_source); print('provenance:   ', p.provenance, '(', p.verification, ')'); print('gate sha256:  ', p.gate_sha256); print('engine sha256:', p.engine_sha256); print('manifest:     ', p.release_manifest)"
+    if ($LASTEXITCODE -ne 0) { throw "Tethers discovery failed" }
+
+    Write-Host "`n== permission-slip doctor =="
+    & $Python -m permission_slip doctor
+    Write-Host "(informational; the test matrix below is the gate)"
 
     Write-Host "`n== Running automated tests =="
     & $Python -m unittest discover -s tests -v
