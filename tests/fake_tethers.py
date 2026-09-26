@@ -13,7 +13,11 @@ import shutil
 import sys
 from pathlib import Path
 
-FAKE_PRODUCT_VERSION = "9.9.9"
+#: The version a default fake released bundle reports. It is the accepted
+#: production Tethers version so that ordinary fixtures exercise the same
+#: happy path Permission Slip ships with; tests that need an unsupported or
+#: missing version pass ``product_version=`` explicitly.
+FAKE_PRODUCT_VERSION = "0.8.1"
 #: Fixed behaviours. ``omit:<field>`` / ``set:<field>=<json>`` additionally
 #: mutate the hello result (or ``request_id``) to break the frozen contract.
 GATE_MODES = (
@@ -98,18 +102,20 @@ def main():
         sys.stdout.write("tethers " + PRODUCT_VERSION + "\\n")
         return 0
     if "describe" in args:
+        data = {{
+            "schema": "tethers.describe/1",
+            "cli_schema": "tethers.cli/1",
+            "supported_protocol_versions": ["0.1"],
+            "supported_language_versions": ["0.1"],
+        }}
+        if PRODUCT_VERSION:
+            data["version"] = PRODUCT_VERSION
         sys.stdout.write(json.dumps({{
             "schema": "tethers.cli/1",
             "command": "describe",
             "status": "ok",
             "exit_code": 0,
-            "data": {{
-                "schema": "tethers.describe/1",
-                "version": PRODUCT_VERSION,
-                "cli_schema": "tethers.cli/1",
-                "supported_protocol_versions": ["0.1"],
-                "supported_language_versions": ["0.1"],
-            }},
+            "data": data,
         }}) + "\\n")
         return 0
     if "gate" not in args:
@@ -179,14 +185,16 @@ def _launcher(directory: Path, script: Path) -> Path:
     return launcher
 
 
-def make_fake_gate(directory: Path, mode: str = "ok") -> Path:
+def make_fake_gate(
+    directory: Path, mode: str = "ok", *, product_version: str = FAKE_PRODUCT_VERSION
+) -> Path:
     """Write a fake Gate executable into ``directory``; returns its path."""
     if not valid_gate_mode(mode):  # pragma: no cover - guard against typos
         raise ValueError(f"unknown fake gate mode {mode!r}")
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "_fake_tethers_gate.py"
     script.write_text(
-        _GATE_SCRIPT.format(mode=mode, version=FAKE_PRODUCT_VERSION),
+        _GATE_SCRIPT.format(mode=mode, version=product_version),
         encoding="utf-8",
         newline="\n",
     )
@@ -221,6 +229,7 @@ def make_release_bundle(
     engine: bool = True,
     manifest: bool = True,
     tamper: bool = False,
+    product_version: str = FAKE_PRODUCT_VERSION,
 ) -> Path:
     """Build a bundle shaped like a real released Tethers runtime.
 
@@ -229,7 +238,7 @@ def make_release_bundle(
     """
     bin_dir = bundle_root / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    gate = make_fake_gate(bin_dir, gate_mode)
+    gate = make_fake_gate(bin_dir, gate_mode, product_version=product_version)
     engine_path = make_engine(bin_dir) if engine else None
 
     if manifest:

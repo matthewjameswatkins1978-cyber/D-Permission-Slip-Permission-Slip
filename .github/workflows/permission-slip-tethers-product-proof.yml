@@ -1,0 +1,167 @@
+name: Permission Slip Tethers product proof
+
+# Proves Permission Slip consumes the published Tethers 0.8.1 product on the
+# three official Permission Slip targets: Windows x86-64, Linux x86-64 and
+# macOS ARM64. It never builds Tethers, never tests macOS Intel, and never
+# uses a development Tethers override.
+#
+# Triggered only at a product-consumption decision boundary (a PR touching the
+# Tethers-consumption / provenance / version surface). A docs-only change does
+# not wake this matrix.
+
+on:
+  pull_request:
+    paths:
+      - 'permission_slip/**'
+      - 'tests/**'
+      - 'verification/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - '.github/workflows/permission-slip-tethers-product-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_LOCK: verification/tethers-v0.8.1.lock.json
+
+jobs:
+  product-proof:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x86-64
+          - os: ubuntu-latest
+            target: linux-x86-64
+          # Same runner label Tethers uses for its ARM64 package proof.
+          - os: macos-15
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Permission Slip
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Record runner platform
+        shell: bash
+        run: |
+          printf 'runner.os=%s\n' '${{ matrix.os }}'
+          printf 'sys.platform='; python -c 'import sys; print(sys.platform)'
+          printf 'machine='; python -c 'import platform; print(platform.machine())'
+          uname -s || true
+          uname -m || true
+
+      - name: Refuse any development Tethers override
+        shell: bash
+        run: |
+          for name in PERMISSION_SLIP_DEV_TETHERS_CHECKOUT PERMISSION_SLIP_DEV_TETHERS_UNVERIFIED TETHERS_ALLOW_SHA_MISMATCH; do
+            value="$(printenv "$name" || true)"
+            if [ -n "$value" ]; then
+              echo "$name must be unset for a published-product proof" >&2
+              exit 1
+            fi
+          done
+          echo "no development override variable is present"
+
+      - name: Acquire and verify the published Tethers 0.8.1 release
+        shell: bash
+        run: |
+          out="$(python scripts/tethers_release.py acquire \
+            --lock "$RELEASE_LOCK" \
+            --target "${{ matrix.target }}" \
+            --dest "$RUNNER_TEMP/tethers" \
+            --report "$RUNNER_TEMP/acquire-report.json")"
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" >> "$GITHUB_ENV"
+
+      - name: Isolated Permission Slip state root (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Tethers refuses a host-data root whose DACL grants write access to
+          # anyone other than the current user, SYSTEM or Administrators. This
+          # applies Tethers' own stated remediation to the temp root rather
+          # than depending on whatever the runner happens to inherit.
+          $state = Join-Path $env:RUNNER_TEMP 'permission-slip-state'
+          New-Item -ItemType Directory -Force -Path $state | Out-Null
+          $acl = Get-Acl -LiteralPath $state
+          $acl.SetAccessRuleProtection($true, $false)
+          foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+          $identities = @(
+            [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+            'NT AUTHORITY\SYSTEM',
+            'BUILTIN\Administrators'
+          )
+          foreach ($id in $identities) {
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+              $id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            [void]$acl.AddAccessRule($rule)
+          }
+          Set-Acl -LiteralPath $state -AclObject $acl
+          $final = Get-Acl -LiteralPath $state
+          $bad = @()
+          foreach ($rule in $final.Access) {
+            $id = $rule.IdentityReference.Value
+            if ($identities -notcontains $id) { $bad += $id }
+          }
+          if ($bad.Count -gt 0) {
+            throw "state root still grants access to: $($bad -join ', ')"
+          }
+          "PERMISSION_SLIP_STATE_DIR=$state" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "state root: $state"
+
+      - name: Isolated Permission Slip state root (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          state="$RUNNER_TEMP/permission-slip-state"
+          mkdir -p "$state"
+          echo "PERMISSION_SLIP_STATE_DIR=$state" >> "$GITHUB_ENV"
+          echo "state root: $state"
+
+      - name: permission-slip setup
+        shell: bash
+        run: |
+          python -m permission_slip setup --json | tee "$RUNNER_TEMP/setup.json"
+
+      - name: permission-slip doctor
+        shell: bash
+        run: |
+          python -m permission_slip doctor --json | tee "$RUNNER_TEMP/doctor.json"
+
+      - name: Real packaged-Tethers product proof
+        shell: bash
+        run: |
+          python scripts/tethers_product_proof.py \
+            --lock "$RELEASE_LOCK" \
+            --state-root "$PERMISSION_SLIP_STATE_DIR" \
+            --evidence-dir "$RUNNER_TEMP/ps-proof-evidence" \
+            --report "$RUNNER_TEMP/product-proof.json"
+
+      - name: Permission Slip test suite
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -t .
+
+      - name: Upload proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-proof-${{ matrix.target }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/acquire-report.json
+            ${{ runner.temp }}/setup.json
+            ${{ runner.temp }}/doctor.json
+            ${{ runner.temp }}/product-proof.json

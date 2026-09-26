@@ -40,6 +40,7 @@ from .tethers_install import (
     DEV_UNVERIFIED_ENV,
     ENGINE_ENV,
     GATE_ENV,
+    SUPPORTED_AUTHORITY_PRODUCT_VERSIONS,
     TethersInstallation,
     describe_product,
     dev_override_active,
@@ -48,6 +49,7 @@ from .tethers_install import (
     host_data_provisioned,
     locate_tethers,
     machine_label,
+    product_version_refusal,
     sha256_file,
     system_label,
     validate_authority_installation,
@@ -209,6 +211,9 @@ def run_doctor(
     protocol_result: dict[str, Any] | None = None
     #: ``None`` when no installation could be located at all.
     acceptable_for_authority: bool | None = None
+    #: ``None`` when no product identity exists to compare against the
+    #: supported production versions; otherwise the version-support answer.
+    product_version_supported: bool | None = None
 
     if locate_error is None:
         assert gate_bin is not None and engine_bin is not None
@@ -336,6 +341,12 @@ def run_doctor(
                 describe=describe,
             )
             authority_refusal = validate_authority_installation(installation)
+            # Presentation only: the verdict above is the single shared
+            # predicate. This re-reads the same pure helper so the *remedy*
+            # can name the real problem (an unsupported but genuine product is
+            # not a corrupt bundle).
+            version_refusal = product_version_refusal(product_version)
+            product_version_supported = version_refusal is None
             ready_status = PASS if authority_refusal is None else FAIL
             if authority_refusal is None:
                 ready_detail = (
@@ -343,6 +354,15 @@ def run_doctor(
                     "release product"
                     + (f", product {product_version}" if product_version else "")
                     + ")"
+                )
+            elif version_refusal is not None and verification == "verified" and product_version:
+                # Verified bytes, wrong product: genuine but unsupported.
+                ready_detail = (
+                    "Tethers installation may not act as Permission Slip authority: "
+                    f"Tethers {product_version} is a genuine verified release, but "
+                    "Permission Slip supports "
+                    f"Tethers {', '.join(SUPPORTED_AUTHORITY_PRODUCT_VERSIONS)} "
+                    "for production authority"
                 )
             else:
                 ready_detail = (
@@ -353,17 +373,27 @@ def run_doctor(
             authority_refusal = "installation binaries could not be hashed"
             ready_status = UNAVAILABLE
             ready_detail = f"not checked ({authority_refusal})"
+            version_refusal = None
+
+        if ready_status == PASS:
+            ready_remediation = None
+        elif version_refusal is not None and verification == "verified":
+            ready_remediation = (
+                "Install a supported Tethers product version: "
+                + ", ".join(SUPPORTED_AUTHORITY_PRODUCT_VERSIONS)
+                + "."
+            )
+        else:
+            ready_remediation = (
+                "Install the released Tethers bundle so its Gate and engine "
+                "match the bundle SHA256SUMS manifest."
+            )
 
         checks.add(
             "tethers.authority_ready",
             ready_status,
             ready_detail,
-            remediation=(
-                None
-                if ready_status == PASS
-                else "Install the released Tethers bundle so its Gate and engine "
-                "match the bundle SHA256SUMS manifest."
-            ),
+            remediation=ready_remediation,
         )
         acceptable_for_authority = authority_refusal is None
 
@@ -373,7 +403,7 @@ def run_doctor(
             checks.add(
                 "authority.protocol",
                 UNAVAILABLE,
-                "not checked (installation is not verified for authority)",
+                f"not checked ({authority_refusal})",
                 remediation="Verify the installation first; see tethers.authority_ready.",
             )
         else:
@@ -517,6 +547,8 @@ def run_doctor(
             "discovery_source": discovery_source or None,
             "engine_source": engine_source or None,
             "product_version": product_version,
+            "supported_product_versions": list(SUPPORTED_AUTHORITY_PRODUCT_VERSIONS),
+            "product_version_supported": product_version_supported,
             "gate_sha256": gate_sha,
             "engine_sha256": engine_sha,
             "release_manifest": str(manifest) if manifest else None,

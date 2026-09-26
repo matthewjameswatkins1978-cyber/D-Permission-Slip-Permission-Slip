@@ -4,22 +4,26 @@ These tests use whatever Tethers the ambient environment resolves -- never an
 injected fake. They are skipped when no released product is installed, and
 they are clearly separated from mock/fake coverage elsewhere in the suite.
 
-Tethers 0.8.1 is **not** assumed anywhere: the assertions below record the
-identity fields the currently released product actually reports.
+Permission Slip 0.2B consumes Tethers **0.8.1** exactly: the identity fields
+below record what that released product actually reports on this platform.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from permission_slip.tethers_client import AUTHORITY_PROTOCOL, GateSession
 from permission_slip.tethers_install import (
+    SUPPORTED_AUTHORITY_PRODUCT_VERSIONS,
     describe_product,
     discover_tethers,
+    machine_label,
+    system_label,
 )
 
 _MINIMAL_CONFIG = {
@@ -78,6 +82,14 @@ class ReleasedTethersProductProofTests(unittest.TestCase):
         # No source .git is needed: the manifest and hashes are enough.
         self.assertFalse((installation.install_root / ".git").exists())  # type: ignore[union-attr]
 
+    def test_released_product_is_an_acceptable_production_authority(self):
+        installation = self.installation
+        self.assertTrue(installation.acceptable_for_authority)
+        self.assertFalse(installation.dev_override_active)
+        self.assertIn(
+            installation.product_version, SUPPORTED_AUTHORITY_PRODUCT_VERSIONS
+        )
+
     def test_release_manifest_hashes_match_the_installed_binaries(self):
         from permission_slip.tethers_install import (
             read_release_manifest,
@@ -99,9 +111,12 @@ class ReleasedTethersProductProofTests(unittest.TestCase):
         self.assertEqual(data["schema"], "tethers.describe/1")
         self.assertEqual(data["cli_schema"], "tethers.cli/1")
         self.assertRegex(str(data["version"]), r"^\d+\.\d+\.\d+")
-        self.assertEqual(data["supported_protocol_versions"], ["0.1"])
-        self.assertEqual(data["supported_language_versions"], ["0.1"])
-        self.assertIsInstance(data["features"], dict)
+        # 0.8.1 describes its discovery surface rather than protocol/language
+        # version lists. Protocol compatibility is negotiated by the authority
+        # ``hello``, which is the contract Permission Slip depends on; describe
+        # is best-effort reporting only.
+        self.assertIsInstance(data.get("supported_discovery_commands"), list)
+        self.assertIn("describe", data.get("supported_discovery_commands", []))
 
     def test_discovered_product_version_matches_describe(self):
         installation = discover_tethers(probe=True)
@@ -137,14 +152,15 @@ class ReleasedTethersProductProofTests(unittest.TestCase):
 
     def test_released_product_reported_back(self):
         # Recorded so the packet's evidence names the exact artefacts used.
-        import platform as platform_module
-
         installation = self.installation
-        self.assertTrue(str(installation.gate_bin).lower().endswith("tethers.exe"))
+        expected_gate = "tethers.exe" if sys.platform == "win32" else "tethers"
+        self.assertEqual(installation.gate_bin.name.lower(), expected_gate)
         self.assertIn("Tethers", str(installation.install_root))  # type: ignore[union-attr]
         self.assertRegex(installation.gate_sha256, r"^[0-9a-f]{64}$")
         self.assertRegex(installation.engine_sha256, r"^[0-9a-f]{64}$")
-        self.assertEqual(installation.platform, f"{platform_module.system()} x86_64")
+        # The reported platform is this runner, on every official target.
+        self.assertEqual(installation.platform, f"{system_label()} {machine_label()}")
+        self.assertIn(machine_label(), ("x86_64", "arm64"))
 
 
 if __name__ == "__main__":
