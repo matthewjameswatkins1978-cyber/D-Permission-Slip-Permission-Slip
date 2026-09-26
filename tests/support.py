@@ -7,6 +7,7 @@ configuration back.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,14 @@ from permission_slip.doctrine import load_doctrine
 DOCTRINE_PATH = Path(__file__).resolve().parent.parent / "doctrine" / "matthew.v0.1.json"
 CANONICAL_REPOSITORY = load_doctrine(DOCTRINE_PATH)["project"]["canonical_repository"]
 CANONICAL_IDENTITY = "github.com/matthewjameswatkins1978-cyber/d-permission-slip-permission-slip"
+
+
+def matthew_doctrine() -> dict:
+    """The current Customer Zero doctrine as an unvalidated mutable document.
+
+    Portability tests mutate freely; validation is the code under test.
+    """
+    return json.loads(DOCTRINE_PATH.read_text(encoding="utf-8"))
 
 # A deliberately wrong remote: a non-GitHub host.
 EVIL_REMOTE_URL = "https://evil.example/example.git"

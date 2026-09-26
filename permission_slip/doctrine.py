@@ -104,21 +104,18 @@ def slug(action: str) -> str:
     return action.replace(".", "-").replace("_", "-").lower()
 
 
-def _jcs_bytes(value: Any) -> bytes:
-    # RFC 8785 for the value domain used by manifests (strings, integers,
-    # booleans, null, arrays, objects; no floats). Matches Tethers'
-    # serde_json_canonicalizer. The encoder itself is shared with Doctrine
-    # Contract v1 so the two digest domains can never disagree.
-    return doctrine_contract.canonical_json_bytes(value)
-
-
 def manifest_digest(manifest: dict[str, Any]) -> str:
     filtered = {
         key: value
         for key, value in manifest.items()
         if key not in ("digest", "title", "description")
     }
-    return "sha256:" + hashlib.sha256(_jcs_bytes(filtered)).hexdigest()
+    # Permission Slip Canonical JSON v1, shared with Doctrine Contract v1 so
+    # the doctrine digest and the manifest digest can never disagree on what
+    # "the same bytes" means. Not an RFC 8785 claim.
+    return "sha256:" + hashlib.sha256(
+        doctrine_contract.canonical_json_bytes(filtered)
+    ).hexdigest()
 
 
 def _scope_argument_value(scope_arg: str, action: str) -> str:

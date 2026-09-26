@@ -16,12 +16,15 @@ import unittest
 from pathlib import Path
 from typing import Any, Callable
 
+import permission_slip.doctrine as doctrine_module
 from permission_slip.doctrine import DoctrineError, compile_doctrine, load_doctrine
 from permission_slip.doctrine_contract import (
+    CANONICAL_JSON_V1,
     SCHEMA_ID,
     DoctrineValidationError,
     canonical_digest,
     canonical_doctrine_bytes,
+    canonical_json_bytes,
     parse_doctrine_json,
     validate_doctrine,
 )
@@ -508,6 +511,78 @@ class CompilerBoundaryTests(unittest.TestCase):
             with self.assertRaises(DoctrineValidationError) as caught:
                 load_doctrine(path)
         self.assertEqual(caught.exception.path, "$.actors")
+
+
+class CanonicalJsonV1Tests(unittest.TestCase):
+    """Regressions around the documented canonicalisation contract."""
+
+    CONTRACT_SOURCE = REPO / "permission_slip" / "doctrine_contract.py"
+
+    def test_the_encoding_has_an_explicit_local_name(self):
+        self.assertEqual(CANONICAL_JSON_V1, "Permission Slip Canonical JSON v1")
+
+    def test_no_rfc_8785_claim_remains_in_the_source(self):
+        # We define this encoding ourselves; we do not claim JCS interoperability.
+        sources = {
+            "doctrine": Path(doctrine_module.__file__).read_text(encoding="utf-8"),
+            "contract": self.CONTRACT_SOURCE.read_text(encoding="utf-8"),
+        }
+        for name, source in sources.items():
+            with self.subTest(module=name):
+                self.assertNotIn("RFC 8785 for the value domain", source)
+                self.assertNotIn("serde_json_canonicalizer", source)
+        self.assertIn(CANONICAL_JSON_V1, canonical_json_bytes.__doc__ or "")
+
+    def test_object_key_order_is_irrelevant_to_the_bytes(self):
+        document = base()
+        self.assertEqual(
+            canonical_doctrine_bytes(document),
+            canonical_doctrine_bytes(shuffled(document)),
+        )
+
+    def test_array_order_is_relevant_to_the_bytes(self):
+        document = base()
+        reordered = base()
+        reordered["capabilities"].reverse()
+        self.assertNotEqual(
+            canonical_doctrine_bytes(document),
+            canonical_doctrine_bytes(reordered),
+        )
+
+    def test_unicode_text_survives_without_ascii_escaping(self):
+        document = base()
+        document["human"]["display_name"] = "Matth\u00e9e \u2728"
+        encoded = canonical_doctrine_bytes(document)
+        self.assertIn("Matth\u00e9e \u2728".encode("utf-8"), encoded)
+        self.assertNotIn(b"\\u00e9", encoded)
+        self.assertNotIn(b"\\u2728", encoded)
+        self.assertEqual(json.loads(encoded), document)
+
+    def test_control_quote_and_backslash_escaping_is_deterministic(self):
+        note = 'a"b\\c\nd\te\x01f/g'
+        first, second = base(), base()
+        first["human"]["note"] = note
+        second["human"]["note"] = note
+        encoded = canonical_doctrine_bytes(first)
+        self.assertEqual(encoded, canonical_doctrine_bytes(second))
+        self.assertIn(b'a\\"b\\\\c\\nd\\te\\u0001f/g', encoded)
+        self.assertEqual(json.loads(encoded)["human"]["note"], note)
+
+    def test_no_float_enters_the_doctrine_domain(self):
+        for mutate in (
+            lambda d: d["boundaries"]["promotional_credit"].update(
+                per_call_limit_cents=1.5
+            ),
+            lambda d: d["project"].update(root_scope=1.0),
+        ):
+            with self.subTest(mutate=mutate):
+                document = base()
+                mutate(document)
+                with self.assertRaises(DoctrineValidationError):
+                    canonical_doctrine_bytes(document)
+
+    def test_matthew_digest_is_unchanged(self):
+        self.assertEqual(canonical_digest(base()), MATTHEW_DIGEST)
 
 
 if __name__ == "__main__":

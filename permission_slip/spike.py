@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import doctrine as doctrine_module
+from . import doctrine_contract, doctrine_store
 from .actions import ActionAdapter, ActionAdapterError, NormalizedAction, UntrustedActorError
 from .explanations import explain
 from .executor import FixtureExecutor, FixtureFailure
@@ -105,7 +106,58 @@ class PermissionSlip:
         allow_unverified_tethers_for_development: bool = False,
     ):
         self.doctrine_path = Path(doctrine_path).resolve()
-        self.doctrine = doctrine_module.load_doctrine(self.doctrine_path)
+        self._initialise(
+            doctrine_module.load_doctrine(self.doctrine_path),
+            workdir=workdir,
+            repo_root=repo_root,
+            paths=paths,
+            allow_unverified_tethers_for_development=allow_unverified_tethers_for_development,
+        )
+
+    @classmethod
+    def from_active_doctrine(
+        cls,
+        *,
+        state_root: str | Path | None = None,
+        workdir: str | Path | None = None,
+        repo_root: str | Path | None = None,
+        paths=None,
+        allow_unverified_tethers_for_development: bool = False,
+    ) -> "PermissionSlip":
+        """Construct from the **adopted** doctrine in Permission Slip state.
+
+        This is the only constructor that reads the store. It resolves the
+        state root, loads the active pointer's candidate, re-validates it,
+        re-derives its digest and requires exact agreement before anything is
+        compiled. No candidate ever becomes active by being imported, and the
+        existing ``PermissionSlip(doctrine_path=...)`` route keeps its exact
+        meaning -- neither route implies the other.
+        """
+        loaded = doctrine_store.load_active_doctrine(state_root)
+        instance = cls.__new__(cls)
+        instance.doctrine_path = None
+        instance.doctrine_digest = loaded.digest
+        instance._initialise(
+            loaded.document,
+            workdir=workdir,
+            repo_root=repo_root,
+            paths=paths,
+            allow_unverified_tethers_for_development=allow_unverified_tethers_for_development,
+        )
+        return instance
+
+    def _initialise(
+        self,
+        doctrine: dict[str, Any],
+        *,
+        workdir: str | Path | None,
+        repo_root: str | Path | None,
+        paths,
+        allow_unverified_tethers_for_development: bool,
+    ) -> None:
+        self.doctrine = doctrine
+        if not hasattr(self, "doctrine_digest"):
+            self.doctrine_digest = doctrine_contract.canonical_digest(doctrine)
         self.repo_root = Path(repo_root or Path(__file__).resolve().parent.parent).resolve()
         self.workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="permission-slip-"))
         self.workdir.mkdir(parents=True, exist_ok=True)
