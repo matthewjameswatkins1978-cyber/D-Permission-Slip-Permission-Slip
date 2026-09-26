@@ -1,14 +1,31 @@
 <#
 .SYNOPSIS
-    Provision a pinned Tethers R2 checkout into .deps/tethers (git-ignored).
+    CONTRIBUTOR / DEVELOPMENT TOOLING ONLY - build a Tethers source checkout.
 
 .DESCRIPTION
-    Clones tethers-lang, checks out the required canonical R2 merge, and builds
-    the Authority Gate binary. It never modifies Tethers. The Core engine is
-    built with dune when available; otherwise an existing engine can be pointed
-    at with TETHERS_ENGINE_BIN.
+    This is NOT how Permission Slip finds Tethers.
 
-    This directory is git-ignored and is never committed into Permission Slip.
+    Permission Slip consumes an installed/released Tethers product. Production
+    discovery looks at explicit configured executable paths, then PATH / a known
+    install location, then the engine shipped beside the Gate executable. It
+    never probes .deps/tethers, never probes D:\tethers-lang, and never needs a
+    Tethers .git directory.
+
+    This script exists so a contributor working on the Tethers side can build a
+    local source checkout for experimentation. The resulting checkout is only
+    reachable through the EXPLICITLY named development switch:
+
+        $env:PERMISSION_SLIP_DEV_TETHERS_CHECKOUT = <checkout path>
+
+    Anything discovered that way is reported by `permission-slip doctor` as a
+    development source checkout and is never treated as verified product
+    provenance.
+
+    It never modifies Tethers. The Core engine is built with dune when
+    available; otherwise point TETHERS_ENGINE_BIN at an existing engine build.
+
+    The checkout directory is git-ignored and is never committed into
+    Permission Slip.
 #>
 [CmdletBinding()]
 param(
@@ -20,6 +37,10 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $DepsDir) { $DepsDir = Join-Path $repoRoot ".deps/tethers" }
+
+Write-Warning "DEVELOPMENT ONLY. This builds a Tethers source checkout for contributors."
+Write-Warning "It is not the normal install path. Install the released Tethers bundle instead,"
+Write-Warning "and use 'permission-slip doctor' to verify what you actually have."
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DepsDir) | Out-Null
 
@@ -52,4 +73,9 @@ if (Test-Path $engine) {
     Write-Warning "Core engine not built and dune is unavailable. Set TETHERS_ENGINE_BIN to an existing engine build."
 }
 
-Write-Host "Done. TETHERS_ROOT=$DepsDir"
+Write-Host ""
+Write-Host "To point Permission Slip at this development checkout EXPLICITLY:"
+Write-Host "  `$env:PERMISSION_SLIP_DEV_TETHERS_CHECKOUT = '$DepsDir'"
+Write-Host "Then verify how it is classified:"
+Write-Host "  permission-slip doctor"
+Write-Warning "doctor will report this as an unverified development source checkout."

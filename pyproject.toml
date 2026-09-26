@@ -1,11 +1,14 @@
 [project]
 name = "permission-slip"
-version = "0.1.0"
-description = "Permission Slip v0.1 vertical integration spike (human doctrine over Tethers authority)."
+version = "0.2.0"
+description = "Permission Slip 0.2 -- human doctrine over the Tethers product consumption boundary."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+permission-slip = "permission_slip.__main__:main"
+
 [tool.permission-slip]
-# No third-party runtime dependencies: the spike uses the standard library and
-# talks to the real public tethers.authority/1 stdio seam.
+# No third-party runtime dependencies: Permission Slip uses the standard
+# library and talks to the real public tethers.authority/1 stdio seam.
