@@ -9,10 +9,22 @@
     "properties": {
       "repository": {
         "type": "string"
+      },
+      "source_commit": {
+        "type": "string"
+      },
+      "target_commit": {
+        "type": "string"
+      },
+      "target_ref": {
+        "type": "string"
       }
     },
     "required": [
-      "repository"
+      "repository",
+      "source_commit",
+      "target_commit",
+      "target_ref"
     ],
     "additionalProperties": false
   },
@@ -69,5 +81,5 @@
     "tool_name": "fixture_git_merge_accepted",
     "adapter": null
   },
-  "digest": "sha256:578db244f77c4122b134403116f4c62f9139cf57a0b5ae58b6860c719d889095"
+  "digest": "sha256:ed617e996c5d3b24523cefab2691b21e706b08a29f24c59d2086ef3e45edce7d"
 }

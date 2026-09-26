@@ -20,6 +20,15 @@ from .actions import NormalizedAction
 
 SANDBOX = "runtime/spike-workspace"
 
+#: The only three truthful physical outcomes. ``succeeded`` is never inferred
+#: from "the process started"; it is what actually happened.
+STATUS_SUCCEEDED = "succeeded"
+STATUS_FAILED = "failed"
+STATUS_UNCERTAIN = "uncertain"
+
+#: Statuses the orchestration layer is allowed to send to a Tethers OUTCOME.
+EXECUTION_STATUSES = (STATUS_SUCCEEDED, STATUS_FAILED, STATUS_UNCERTAIN)
+
 
 class FixtureFailure(RuntimeError):
     """The fixture effect failed physically."""
@@ -31,26 +40,59 @@ class FixtureFailure(RuntimeError):
 
 @dataclass
 class ExecutorResult:
+    """The shared contract every executor returns.
+
+    Real and fixture executors answer with the same shape so the orchestration
+    layer can stop assuming ``executor returned == succeeded``. ``status`` is
+    the truth about the physical world; ``executed`` says whether an effect was
+    actually attempted. ``detail`` carries safe structured evidence only --
+    counts, digests and exit codes, never bodies or file content.
+    """
+
     action: str
     ok: bool
     output: dict[str, Any]
     effects: list[str] = field(default_factory=list)
     external_execution_identity: str = ""
+    status: str = STATUS_SUCCEEDED
+    executed: bool = True
+    detail: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "action": self.action,
             "ok": self.ok,
+            "status": self.status,
+            "executed": self.executed,
             "output": self.output,
             "effects": list(self.effects),
             "external_execution_identity": self.external_execution_identity,
+            "detail": dict(self.detail),
         }
 
 
 class FixtureExecutor:
-    def __init__(self, repo_root: str | os.PathLike[str]):
+    """The harmless deterministic executor. It stays the default.
+
+    It is deliberately *not* turned into a production executor: real effects
+    live in :mod:`permission_slip.host_executor` and must be selected
+    explicitly. When a trusted host context is supplied, authority identities
+    are mapped back to physical paths through it so the fixture exercises the
+    same mapping the real executor uses.
+    """
+
+    #: Selecting a real executor is an explicit constructor decision, never a
+    #: default flip. Tests may assert on this to prove the default never moved.
+    is_real = False
+
+    def __init__(
+        self,
+        repo_root: str | os.PathLike[str],
+        host_context=None,
+    ):
         self.repo_root = Path(repo_root).resolve()
         self.sandbox = self.repo_root / SANDBOX
+        self.host_context = host_context
 
     # -- helpers -----------------------------------------------------------
 
@@ -74,8 +116,17 @@ class FixtureExecutor:
         return path
 
     def _scoped_repo_path(self, relative: str) -> Path:
-        """Resolve a repo-relative path and confine it to the sandbox."""
-        path = (self.repo_root / relative).resolve()
+        """Resolve an authority identity to a physical path, confined to the sandbox.
+
+        With a trusted host context the identity is mapped through
+        ``resource_prefix -> physical`` exactly as the real executor does;
+        without one, it is treated as repo-relative (legacy fixture behaviour).
+        Either way the result must still land inside the fixture sandbox.
+        """
+        if self.host_context is not None:
+            path = self.host_context.physical_path(relative)
+        else:
+            path = (self.repo_root / relative).resolve()
         if not str(path).startswith(str(self.sandbox)):
             raise FixtureFailure("fixture refused to write outside the sandbox")
         return path
@@ -126,9 +177,13 @@ class FixtureExecutor:
             rel = str(args.get("path", "")).replace("\\", "/")
             target = self._scoped_repo_path(rel)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(
-                "edited by permission slip fixture\n", encoding="utf-8"
-            )
+            payload = normalized.execution_payload
+            if payload is None:
+                target.write_text("edited by permission slip fixture\n", encoding="utf-8")
+            else:
+                # The fixture writes exactly what was bound at normalisation:
+                # the same bytes whose digest Tethers admitted.
+                target.write_bytes(payload)
             effects.append(f"edited:{rel}")
 
         elif action == "git.push.feature":
@@ -174,4 +229,7 @@ class FixtureExecutor:
             output=output,
             effects=effects,
             external_execution_identity=external_id,
+            status=STATUS_SUCCEEDED,
+            executed=True,
+            detail={"executor": "fixture"},
         )

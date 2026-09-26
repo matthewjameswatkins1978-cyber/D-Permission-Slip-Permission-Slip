@@ -50,21 +50,67 @@ def _git(*args: str, cwd: Path | None = None) -> str:
     return (completed.stdout or "").strip()
 
 
+#: The branch vocabulary the normalisation and lifecycle tests push and merge.
+#:
+#: 0.4A binds an **exact source commit** for a real push and merge, so a test
+#: repository with no commits and no branches cannot express those operations
+#: at all. These are fixture branches pointing at the initial fixture commit --
+#: they exist so the tests exercise real identity binding rather than a
+#: hand-waved one.
+FIXTURE_BRANCHES = (
+    "feature/vertical-spike",
+    "feature/foo",
+    "feature/a/b",
+    "local-work",
+    "worktree-source",
+    "work/accepted",
+)
+
+
 def init_git_repo(path: str | Path, remotes: dict[str, str] | None = None) -> Path:
     """Create a real temporary Git repository with the given remotes.
 
     ``origin`` always points at the doctrine's canonical repository so that
-    ordinary test operations exercise the standing-ALLOW path.
+    ordinary test operations exercise the standing-ALLOW path. The repository
+    gets one empty fixture commit plus :data:`FIXTURE_BRANCHES`, so trusted
+    normalisation has real commits and refs to bind.
     """
     repo = Path(path)
     repo.mkdir(parents=True, exist_ok=True)
     _git("init", "-q", str(repo))
+    # Repository-local identity only: the fixture never writes global config.
+    _git("config", "user.email", "permission-slip@example.invalid", cwd=repo)
+    _git("config", "user.name", "Permission Slip Fixture", cwd=repo)
+    _git("commit", "--allow-empty", "-q", "-m", "fixture initial commit", cwd=repo)
+    for branch in FIXTURE_BRANCHES:
+        _git("branch", branch, cwd=repo)
     configured = {"origin": CANONICAL_REPOSITORY}
     if remotes:
         configured.update(remotes)
     for name, url in configured.items():
         _git("remote", "add", name, url, cwd=repo)
     return repo
+
+
+def commit_all(repo: str | Path, message: str = "fixture commit") -> str:
+    """Stage everything, commit, and return the new commit OID.
+
+    ``--allow-empty`` so a pristine checkout can still produce a real commit to
+    bind as a source or a merge target.
+    """
+    _git("add", "-A", cwd=Path(repo))
+    _git("commit", "-q", "--allow-empty", "-m", message, cwd=Path(repo))
+    return _git("rev-parse", "HEAD", cwd=Path(repo))
+
+
+def create_branch(repo: str | Path, name: str, start_point: str = "HEAD") -> str:
+    """Create ``name`` at ``start_point`` and return its commit OID."""
+    _git("branch", name, start_point, cwd=Path(repo))
+    return _git("rev-parse", name, cwd=Path(repo))
+
+
+def head_oid(repo: str | Path) -> str:
+    return _git("rev-parse", "HEAD", cwd=Path(repo))
 
 
 def set_remote_url(repo: str | Path, name: str, url: str) -> None:

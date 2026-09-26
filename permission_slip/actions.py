@@ -28,6 +28,7 @@ here; it prepares the exact input Tethers will decide on.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -35,10 +36,27 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
+from .host_context import (
+    DEFAULT_TEST_PROFILES,
+    HostContextError,
+    TrustedHostContext,
+    command_digest,
+)
+
+#: Profile used when an operation does not name one. Still a trusted profile:
+#: the caller can choose *which* known profile, never what it runs.
+DEFAULT_TEST_PROFILE = "permission-slip-full"
+
+#: Stable, explicit stand-in for "there is no file here yet". Chosen so it can
+#: never be mistaken for a real ``sha256:<64 hex>`` digest.
+MISSING_FILE_DIGEST = "permission-slip:missing"
+
 # Keys a caller might use to try to manufacture authority or identity. They are
 # never read. ``actor`` is included: identity is not caller-selectable, and the
 # ``*_remote``/``*_url`` keys are included: push destination is resolved from
-# trusted repository state, never claimed by content.
+# trusted repository state, never claimed by content. ``command``/``cmd``/
+# ``executable``/``shell`` are included: no operation may supply the process it
+# wants run -- trusted host context resolves test commands from named profiles.
 FORBIDDEN_CALLER_KEYS = (
     "actor",
     "permission",
@@ -59,6 +77,10 @@ FORBIDDEN_CALLER_KEYS = (
     "repository_url",
     "canonical_remote",
     "approved_remote",
+    "command",
+    "cmd",
+    "executable",
+    "shell",
 )
 
 PROTECTED_BRANCHES = {"main", "master", "trunk", "release"}
@@ -137,8 +159,18 @@ class NormalizedAction:
     ignored_caller_claims: tuple[str, ...] = ()
     supervision: SupervisoryMetadata = field(default_factory=SupervisoryMetadata)
     summary: str = ""
+    #: Sealed execution payload. Travels with the action so the executor can
+    #: re-derive its digest immediately before use, but it is **not** part of
+    #: ``arguments``, **not** in :meth:`as_dict`, never sent to Tethers and
+    #: never written to a trace. Only its digest is authority-visible.
+    execution_payload: bytes | None = field(default=None, repr=False, compare=False)
+    #: Sealed push transport resolved from trusted repository state. Same
+    #: rule: its digest is bound into ``arguments``, the transport string
+    #: itself is never logged and never re-read after COMMIT.
+    sealed_transport: str | None = field(default=None, repr=False, compare=False)
 
     def as_dict(self) -> dict[str, Any]:
+        """The authority-visible view. Deliberately excludes sealed payloads."""
         return {
             "action": self.action,
             "arguments": dict(self.arguments),
@@ -430,11 +462,27 @@ def parse_push(args: list[str]) -> dict[str, Any]:
 
 
 class ActionAdapter:
-    def __init__(self, doctrine: dict[str, Any], repo_root: str | os.PathLike[str] | None = None):
+    def __init__(
+        self,
+        doctrine: dict[str, Any],
+        repo_root: str | os.PathLike[str] | None = None,
+        host_context: TrustedHostContext | None = None,
+    ):
         self.doctrine = doctrine
-        self.repo_root = os.path.realpath(repo_root or os.getcwd())
+        # Trusted construction fact. Callers of ``normalize`` can supply an
+        # operation and an actor, never these.
+        try:
+            self.host_context = host_context or TrustedHostContext.for_normalisation(
+                repo_root=repo_root or os.getcwd(), doctrine=doctrine
+            )
+        except HostContextError as exc:
+            # A doctrine this adapter cannot establish trusted host facts for
+            # is unusable, and the established public failure type stays the
+            # adapter's own.
+            raise ActionAdapterError(str(exc)) from None
+        self.repo_root = str(self.host_context.repo_root)
         project = doctrine.get("project", {})
-        self.root_scope = project.get("root_scope", "runtime/spike-workspace/")
+        self.root_scope = self.host_context.root_scope
         # The one repository a push is authorised to reach. A doctrine that
         # cannot name it cannot support push authority at all, so fail closed
         # at construction rather than silently allowing nothing-or-everything.
@@ -464,7 +512,38 @@ class ActionAdapter:
         return self.root_scope.rstrip("/") + "/" + "/".join(parts)
 
     def _repo_path(self) -> str:
-        return self._workspace_path("repos", "permission-slip")
+        # The scoped authority identity of the Permission Slip checkout itself.
+        # This is a synthetic path_prefix identity, not repository scope; it is
+        # what 0.4A uses until 0.8 provides truthful first-class repository
+        # resource scope.
+        return self.host_context.resource_prefix.rstrip("/")
+
+    @staticmethod
+    def file_digest(path: str | os.PathLike[str]) -> str:
+        """``sha256:<hex>`` of a file's current bytes, or the missing sentinel."""
+        try:
+            with open(path, "rb") as handle:
+                payload = handle.read()
+        except (FileNotFoundError, NotADirectoryError):
+            return MISSING_FILE_DIGEST
+        except OSError as exc:
+            raise ActionAdapterError(f"cannot read {path}: {exc}") from None
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    def _physical_for_authority(self, authority: str) -> str:
+        """Physical location of an authority identity.
+
+        Inside the trusted resource prefix this is the exact inverse of the
+        trusted mapping; outside it the identity is preserved as a plain
+        root-relative (or absolute) location so its digest is still truthful
+        even though scope evaluation will deny the edit.
+        """
+        try:
+            return str(self.host_context.physical_path(authority))
+        except HostContextError:
+            root = os.path.realpath(self.repo_root)
+            candidate = authority if os.path.isabs(authority) else os.path.join(root, authority)
+            return os.path.realpath(candidate)
 
     def _actor_facts(self, actor: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -491,28 +570,15 @@ class ActionAdapter:
         return "unknown"
 
     def _canonical_project_path(self, requested: Any) -> str:
-        """Canonicalise a requested path against the trusted project root.
+        """Map a requested path onto the scoped authority identity.
 
-        Traversal is resolved against the real root. A path that escapes the
-        root is returned in its true out-of-scope relative form (leading
-        ``..`` segments preserved) or as an absolute path; it is never rewritten
-        into an apparently in-scope path.
+        Inside the trusted root the identity is
+        ``resource_prefix + relative path``. Outside it, the true out-of-scope
+        relative form is preserved (leading ``..`` segments intact) or the
+        absolute form is kept; an escaping path is never rewritten into an
+        apparently in-scope identity.
         """
-        requested = str(requested)
-        root = os.path.realpath(self.repo_root)
-        if os.path.isabs(requested):
-            resolved = os.path.realpath(requested)
-        else:
-            resolved = os.path.realpath(os.path.join(root, requested))
-        if _under_root(root, resolved):
-            return os.path.relpath(resolved, root).replace("\\", "/")
-        # Outside the trusted root: preserve the true out-of-scope identity,
-        # with traversal segments intact so scope evaluation denies it.
-        try:
-            return os.path.relpath(resolved, root).replace("\\", "/")
-        except ValueError:
-            # Different drive on Windows: preserve the absolute form.
-            return resolved.replace("\\", "/")
+        return self.host_context.authority_path(requested)
 
     def _effective_push_urls(self, remote: str) -> list[str]:
         """Every destination ``git push`` would physically reach.
@@ -556,8 +622,10 @@ class ActionAdapter:
             return [line.strip() for line in (completed.stdout or "").splitlines()]
         return [line.strip() for line in remote.splitlines()]
 
-    def _resolve_push_remote(self, remote: Any) -> str:
+    def _resolve_push_remote(self, remote: Any) -> tuple[str, str]:
         """Resolve a ``git push`` destination from trusted local Git state.
+
+        Returns ``(canonical identity, sealed transport)``.
 
         ``remote`` is caller content: it is only part of the actual command.
         What it *points at* is read from the repository's own configuration via
@@ -567,7 +635,7 @@ class ActionAdapter:
         consulted.
 
         v0.1 deliberately requires **exactly one** effective push URL. Two URLs
-        are never reasoned about as "probably equivalent" — one exact
+        are never reasoned about as "probably equivalent" -- one exact
         destination keeps the authority model simple and truthful.
         """
         if not isinstance(remote, str) or not remote or remote.startswith("-"):
@@ -592,7 +660,42 @@ class ActionAdapter:
                 f"not the canonical project repository "
                 f"{self.canonical_repository_identity}"
             )
-        return identity
+        return identity, urls[0]
+
+    def _resolve_push_source(self, refspec: str) -> str:
+        """The exact commit a destination-only or explicit refspec would push.
+
+        Called only once the push has already been classified as an ordinary
+        feature push. A refspec whose source cannot be resolved to a commit is
+        unmappable rather than guessed at: a real push needs an exact source.
+        """
+        body = refspec[1:] if refspec.startswith("+") else refspec
+        source = body.split(":", 1)[0] if ":" in body else body
+        if not source:
+            raise ActionAdapterError("git push source could not be established")
+
+        for candidate in (f"refs/heads/{source}", source):
+            probe = subprocess.run(
+                ["git", "-C", self.repo_root, "rev-parse", "--verify", "--quiet", candidate],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+            if probe.returncode == 0:
+                oid = (probe.stdout or "").strip()
+                if re.fullmatch(r"[0-9a-f]{40}", oid):
+                    return oid
+        raise ActionAdapterError(
+            f"git push source {source!r} does not resolve to a commit"
+        )
+
+    @staticmethod
+    def transport_digest(transport: str) -> str:
+        return "sha256:" + hashlib.sha256(transport.encode("utf-8")).hexdigest()
+
 
     # -- normalisation -----------------------------------------------------
 
@@ -608,17 +711,23 @@ class ActionAdapter:
         claims = self._caller_claims(operation)
         tool = operation.get("tool")
         facts = self._actor_facts(actor)
+        payload: bytes | None = None
+        transport: str | None = None
 
         if tool == "git":
-            action, arguments, summary, supervision = self._normalize_git(operation)
+            action, arguments, summary, supervision, transport = self._normalize_git(operation)
         elif tool == "tests":
             action = "dev.tests.run"
-            arguments = {"path": self._workspace_path("tests.log")}
-            summary = "run the project test suite"
+            arguments = self._normalize_tests(operation)
+            summary = (
+                f"run trusted test profile {arguments['test_profile']} "
+                f"against {arguments['path']}"
+            )
             supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
         elif tool == "edit_file":
             action = "project.files.edit"
-            arguments = {"path": self._canonical_project_path(operation.get("path", ""))}
+            payload = self._edit_payload(operation)
+            arguments = self._normalize_edit(operation, payload)
             summary = f"edit {arguments['path']}"
             supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
         elif tool == "external_upload":
@@ -645,11 +754,50 @@ class ActionAdapter:
             ignored_caller_claims=claims,
             supervision=supervision,
             summary=summary,
+            execution_payload=payload,
+            sealed_transport=transport,
         )
+
+    def _normalize_tests(self, operation: dict[str, Any]) -> dict[str, Any]:
+        """Bind a **trusted named profile**, never a caller-supplied command.
+
+        The operation may name a profile. It may not say what to run: the argv
+        vector and its digest both come from trusted host context, so Tethers
+        admits "this trusted command against this project resource" rather than
+        "whatever the caller felt like executing".
+        """
+        profile = str(operation.get("profile") or DEFAULT_TEST_PROFILE)
+        try:
+            argv = self.host_context.resolve_test_profile(profile)
+        except HostContextError as exc:
+            raise ActionAdapterError(str(exc)) from None
+        return {
+            "path": self._repo_path(),
+            "test_profile": profile,
+            "command_digest": command_digest(argv),
+        }
+
+    @staticmethod
+    def _edit_payload(operation: dict[str, Any]) -> bytes:
+        content = operation.get("content")
+        if not isinstance(content, str):
+            raise ActionAdapterError("edit_file requires a string content payload")
+        return content.encode("utf-8")
+
+    def _normalize_edit(self, operation: dict[str, Any], payload: bytes) -> dict[str, Any]:
+        """Bind exact before/after digests; the content itself stays sealed."""
+        authority = self._canonical_project_path(operation.get("path", ""))
+        physical = self._physical_for_authority(authority)
+        return {
+            "path": authority,
+            "before_digest": self.file_digest(physical),
+            "after_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "content_bytes": len(payload),
+        }
 
     def _normalize_git(
         self, operation: dict[str, Any]
-    ) -> tuple[str, dict[str, Any], str, SupervisoryMetadata]:
+    ) -> tuple[str, dict[str, Any], str, SupervisoryMetadata, str | None]:
         argv = operation.get("argv")
         if not isinstance(argv, list) or not argv:
             raise ActionAdapterError("git operation requires a non-empty argv list")
@@ -670,7 +818,7 @@ class ActionAdapter:
             # is caller content; where it points is read from trusted state and
             # must be the canonical project repository before any Git push
             # capability can be emitted at all.
-            remote_repository = self._resolve_push_remote(parsed["remote"])
+            remote_repository, transport = self._resolve_push_remote(parsed["remote"])
 
             if not ambiguous and refspecs:
                 consequential, destination = classify_push_refspec(refspecs[0])
@@ -716,33 +864,107 @@ class ActionAdapter:
                     private_to_public=True,
                     affected_parties=("repository collaborators", "public"),
                 )
-            else:
-                # Standing authority requires *positive* evidence that the
-                # destination is inside feature/*. Anything else is unmappable
-                # and fails closed rather than borrowing standing authority.
-                feature = feature_branch_destination(destination)
-                if feature is None:
-                    raise ActionAdapterError(
-                        "git push destination "
-                        f"{destination!r} is not inside the {FEATURE_NAMESPACE!r} "
-                        "namespace, so it is not mappable to git.push.feature"
-                    )
-                action = "git.push.feature"
-                summary = f"push feature branch {feature} to {remote_repository}"
-                supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
-            return action, arguments, summary, supervision
+                # No source binding here: deletions, wildcards and forced
+                # refspecs have no single "the commit being pushed", and 0.4A
+                # never physically executes this effect anyway.
+                return action, arguments, summary, supervision, None
+
+            # Standing authority requires *positive* evidence that the
+            # destination is inside feature/*. Anything else is unmappable
+            # and fails closed rather than borrowing standing authority.
+            feature = feature_branch_destination(destination)
+            if feature is None:
+                raise ActionAdapterError(
+                    "git push destination "
+                    f"{destination!r} is not inside the {FEATURE_NAMESPACE!r} "
+                    "namespace, so it is not mappable to git.push.feature"
+                )
+            action = "git.push.feature"
+            # A real push needs an exact source. Both the commit that will be
+            # sent and the transport that will receive it are bound into the
+            # Tethers action input, so execution can be re-derived without
+            # re-reading the caller's remote alias after COMMIT.
+            arguments = {
+                **arguments,
+                "source_commit": self._resolve_push_source(refspecs[0]),
+                "remote_transport_digest": self.transport_digest(transport),
+            }
+            summary = f"push feature branch {feature} to {remote_repository}"
+            supervision = SupervisoryMetadata(reversibility=self._reversibility(action))
+            return action, arguments, summary, supervision, transport
 
         if subcommand == "merge":
+            rest = argv[1:]
+            if any(item.startswith("-") for item in rest):
+                # 0.4A supports exactly one narrow merge: fast-forward only,
+                # no editor, no strategy options, no conflict machinery.
+                raise ActionAdapterError(
+                    "only a plain `git merge <source>` is supported; options "
+                    "and merge strategies are outside 0.4A"
+                )
+            source = next((item for item in rest if item), "")
+            if not source:
+                raise ActionAdapterError("git merge requires a source")
+
             action = "git.merge.accepted"
-            source = next((item for item in argv[1:] if not item.startswith("-")), "")
-            summary = f"merge accepted work ({source or 'unnamed source'})"
+            target_commit = self._rev_parse("HEAD")
+            target_ref = self._current_ref()
+            source_commit = self._rev_parse(source)
+            summary = f"merge accepted work ({source})"
             supervision = SupervisoryMetadata(
                 reversibility=self._reversibility(action),
                 affected_parties=("accepted-work authority",),
             )
-            return action, {"repository": repo}, summary, supervision
+            return (
+                action,
+                {
+                    "repository": repo,
+                    "source_commit": source_commit,
+                    "target_commit": target_commit,
+                    "target_ref": target_ref,
+                },
+                summary,
+                supervision,
+                None,
+            )
 
         raise ActionAdapterError(f"unsupported git subcommand: {subcommand!r}")
+
+    def _rev_parse(self, spec: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", self.repo_root, "rev-parse", "--verify", "--quiet", spec],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ActionAdapterError(f"git revision resolution unavailable: {exc}") from None
+        oid = (completed.stdout or "").strip()
+        if completed.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", oid):
+            raise ActionAdapterError(f"git revision {spec!r} could not be resolved")
+        return oid
+
+    def _current_ref(self) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", self.repo_root, "symbolic-ref", "--quiet", "HEAD"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ActionAdapterError(f"git ref resolution unavailable: {exc}") from None
+        ref = (completed.stdout or "").strip()
+        if completed.returncode != 0 or not ref.startswith("refs/"):
+            raise ActionAdapterError("current branch could not be established (detached HEAD?)")
+        return ref
 
     def _normalize_upload(
         self, operation: dict[str, Any]

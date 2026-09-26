@@ -9,10 +9,18 @@
     "properties": {
       "path": {
         "type": "string"
+      },
+      "test_profile": {
+        "type": "string"
+      },
+      "command_digest": {
+        "type": "string"
       }
     },
     "required": [
-      "path"
+      "path",
+      "test_profile",
+      "command_digest"
     ],
     "additionalProperties": false
   },
@@ -69,5 +77,5 @@
     "tool_name": "fixture_dev_tests_run",
     "adapter": null
   },
-  "digest": "sha256:a448c82d9d3c170ada4af2035b56b685d7671cabee7e4d0595cbfb0141381608"
+  "digest": "sha256:f0fea678929e721ac4a99914b3f01852aced71978eebb3da570f8589ee86c68c"
 }

@@ -46,8 +46,13 @@ def tests_op() -> dict:
     return {"tool": "tests", "argv": ["python", "-m", "unittest", "discover"]}
 
 
-def edit_op(path: str = "runtime/spike-workspace/notes.txt") -> dict:
-    return {"tool": "edit_file", "path": path}
+def edit_op(
+    path: str = "runtime/spike-workspace/notes.txt",
+    content: str = "edited by permission slip fixture\n",
+) -> dict:
+    # `content` is part of the operation from 0.4A: an edit is bound to the
+    # exact bytes Tethers admits, never to a fuzzy "edit this file".
+    return {"tool": "edit_file", "path": path, "content": content}
 
 
 def feature_push_op() -> dict:
@@ -669,13 +674,21 @@ class FixtureAndPinningTests(unittest.TestCase):
 
     def test_git_capabilities_bind_remote_and_effect_in_the_fixture(self):
         # The remote/effect fields must reach the action Tethers sees, not just
-        # Permission Slip's receipt or prose.
-        for slug in ("git-push-feature", "git-history-rewrite"):
+        # Permission Slip's receipt or prose. From 0.4A the ordinary feature
+        # push additionally binds its exact source commit and the digest of the
+        # sealed transport, so the physical push can be re-derived from
+        # admitted identity alone.
+        core = {"repository", "remote_repository", "destination_ref", "push_effect"}
+        expected = {
+            "git-push-feature": core | {"source_commit", "remote_transport_digest"},
+            "git-history-rewrite": core,
+        }
+        for slug, fields in expected.items():
             with self.subTest(capability=slug):
                 tether = (COMMITTED_FIXTURE / "tethers" / f"{slug}.tether").read_text(
                     encoding="utf-8"
                 )
-                for field in ("repository", "remote_repository", "destination_ref", "push_effect"):
+                for field in sorted(fields):
                     self.assertIn(f"{field}: anchor.{field}", tether)
 
                 manifest = json.loads(
@@ -683,18 +696,35 @@ class FixtureAndPinningTests(unittest.TestCase):
                         encoding="utf-8"
                     )
                 )
-                expected = {
-                    "repository",
-                    "remote_repository",
-                    "destination_ref",
-                    "push_effect",
-                }
-                self.assertEqual(set(manifest["input_schema"]["required"]), expected)
+                self.assertEqual(set(manifest["input_schema"]["required"]), fields)
                 self.assertEqual(manifest["input_schema"]["additionalProperties"], False)
                 self.assertEqual(
                     manifest["permission_scope"],
                     {"kind": "path_prefix", "allowed_prefixes": ["runtime/spike-workspace/"]},
                 )
+
+    def test_effect_capabilities_bind_their_physical_identity(self):
+        # A real test run must name the trusted command it will launch; a real
+        # edit must name the exact bytes it will write.
+        expected = {
+            "dev-tests-run": {"path", "test_profile", "command_digest"},
+            "project-files-edit": {"path", "before_digest", "after_digest", "content_bytes"},
+            "git-merge-accepted": {
+                "repository",
+                "source_commit",
+                "target_commit",
+                "target_ref",
+            },
+        }
+        for slug, fields in expected.items():
+            with self.subTest(capability=slug):
+                manifest = json.loads(
+                    (COMMITTED_FIXTURE / "manifests" / f"{slug}.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(set(manifest["input_schema"]["required"]), fields)
+                self.assertEqual(manifest["input_schema"]["additionalProperties"], False)
 
     def test_path_scope_still_binds_the_local_repository_argument(self):
         runtime = json.loads(
@@ -710,13 +740,18 @@ class FixtureAndPinningTests(unittest.TestCase):
         # Merge is unchanged: it is not a remote/ref push effect.
         self.assertEqual(bindings["git.merge.accepted"], pointer)
 
-    def test_merge_capability_arguments_are_unchanged(self):
+    def test_merge_capability_binds_source_and_target_identity(self):
+        # A real fast-forward merge must name the exact source commit, the
+        # exact target commit and the exact target ref it will operate on.
         manifest = json.loads(
             (COMMITTED_FIXTURE / "manifests" / "git-merge-accepted.json").read_text(
                 encoding="utf-8"
             )
         )
-        self.assertEqual(manifest["input_schema"]["required"], ["repository"])
+        self.assertEqual(
+            manifest["input_schema"]["required"],
+            ["repository", "source_commit", "target_commit", "target_ref"],
+        )
 
 
 if __name__ == "__main__":

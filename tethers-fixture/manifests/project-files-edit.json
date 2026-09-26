@@ -9,10 +9,22 @@
     "properties": {
       "path": {
         "type": "string"
+      },
+      "before_digest": {
+        "type": "string"
+      },
+      "after_digest": {
+        "type": "string"
+      },
+      "content_bytes": {
+        "type": "integer"
       }
     },
     "required": [
-      "path"
+      "path",
+      "before_digest",
+      "after_digest",
+      "content_bytes"
     ],
     "additionalProperties": false
   },
@@ -69,5 +81,5 @@
     "tool_name": "fixture_project_files_edit",
     "adapter": null
   },
-  "digest": "sha256:c48cf7aca3f4985a3bf0dfd2ffbafae3d12d4a9dd226c05dce8969c3aedb2d3b"
+  "digest": "sha256:acf2f90fdf283185163df003f1331d1fcc89a04650de4779d7ef9c3d3cd8ccd3"
 }

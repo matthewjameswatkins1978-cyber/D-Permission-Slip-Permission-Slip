@@ -351,7 +351,7 @@
           "name": "dev.tests.run",
           "version": 1,
           "manifest_path": "manifests/dev-tests-run.json",
-          "pinned_digest": "sha256:a448c82d9d3c170ada4af2035b56b685d7671cabee7e4d0595cbfb0141381608",
+          "pinned_digest": "sha256:f0fea678929e721ac4a99914b3f01852aced71978eebb3da570f8589ee86c68c",
           "scope_binding": {
             "kind": "path_prefix",
             "argument_json_pointer": "/path"
@@ -361,7 +361,7 @@
           "name": "project.files.edit",
           "version": 1,
           "manifest_path": "manifests/project-files-edit.json",
-          "pinned_digest": "sha256:c48cf7aca3f4985a3bf0dfd2ffbafae3d12d4a9dd226c05dce8969c3aedb2d3b",
+          "pinned_digest": "sha256:acf2f90fdf283185163df003f1331d1fcc89a04650de4779d7ef9c3d3cd8ccd3",
           "scope_binding": {
             "kind": "path_prefix",
             "argument_json_pointer": "/path"
@@ -371,7 +371,7 @@
           "name": "git.push.feature",
           "version": 1,
           "manifest_path": "manifests/git-push-feature.json",
-          "pinned_digest": "sha256:1a51194ead12a011d81b12e09c33376f48d271caa992371a21066a2aaaa39686",
+          "pinned_digest": "sha256:9e74d0fb58488eb779452fc7e0324abcc6c62427999b40492534b5768287eae1",
           "scope_binding": {
             "kind": "path_prefix",
             "argument_json_pointer": "/repository"
@@ -381,7 +381,7 @@
           "name": "git.merge.accepted",
           "version": 1,
           "manifest_path": "manifests/git-merge-accepted.json",
-          "pinned_digest": "sha256:578db244f77c4122b134403116f4c62f9139cf57a0b5ae58b6860c719d889095",
+          "pinned_digest": "sha256:ed617e996c5d3b24523cefab2691b21e706b08a29f24c59d2086ef3e45edce7d",
           "scope_binding": {
             "kind": "path_prefix",
             "argument_json_pointer": "/repository"
