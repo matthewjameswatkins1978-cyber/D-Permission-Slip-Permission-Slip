@@ -58,7 +58,8 @@ Layout:
 | Path | Purpose |
 | --- | --- |
 | `doctrine/matthew.v0.1.json` | Customer Zero doctrine (human source) |
-| `permission_slip/doctrine.py` | Compiles doctrine into Tethers fixtures |
+| `permission_slip/doctrine_contract.py` | Doctrine Contract v1: validate, canonicalise, digest |
+| `permission_slip/doctrine.py` | Compiles a contract-valid doctrine into Tethers fixtures |
 | `permission_slip/actions.py` | Trusted action adapter / trust boundary |
 | `permission_slip/tethers_install.py` | Tethers product discovery, identity, provenance, provisioning |
 | `permission_slip/tethers_client.py` | `tethers.authority/1` stdio client + startup contract |
