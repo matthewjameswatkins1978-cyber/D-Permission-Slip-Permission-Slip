@@ -25,17 +25,30 @@ Two invariants make the contract portable and safe:
   authority-bearing field can never be smuggled in as an unknown key;
 * every scalar has an explicit type, so the canonical form can never contain a
   float and always round-trips byte-for-byte.
+
+Canonical form
+--------------
+
+Identity is computed with **Permission Slip Canonical JSON v1**, a small
+encoding defined here and not borrowed from any external specification. See
+:func:`canonical_json_bytes` for the exact rules. This module also owns the
+schema-version seam: :func:`migrate_to_current` applies only explicitly
+registered migrations and fails closed on anything else.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, NoReturn
+from typing import Any, Callable, Iterable, NamedTuple, NoReturn
 
 from .actions import canonical_repository_identity
 
 SCHEMA_ID = "permission-slip.doctrine/1"
+
+#: Name of the canonical encoding used for every Permission Slip identity.
+#: Deliberately *not* a claim of RFC 8785 / JCS interoperability.
+CANONICAL_JSON_V1 = "Permission Slip Canonical JSON v1"
 
 # The closed v1 vocabulary. Nothing outside these sets is part of the contract.
 TOP_LEVEL_ORDER = (
@@ -173,15 +186,27 @@ def _choice(value: Any, path: str, vocabulary: tuple[str, ...]) -> str:
 
 
 def _unique_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    # json silently keeps the last of duplicate keys, which would make two
-    # different documents look identical. Doctrine identity must not depend on
-    # that silent collapse, so duplicates are a contract violation.
     seen: dict[str, Any] = {}
     for key, value in pairs:
         if key in seen:
             _fail("$", f"duplicate object key {json.dumps(key)}")
         seen[key] = value
     return seen
+
+
+def parse_json_duplicate_safe(text: str) -> Any:
+    """Parse JSON text, refusing duplicate object keys anywhere in the document.
+
+    ``json`` silently keeps the last of duplicate keys, which would make two
+    different documents look identical. Doctrine identity must not depend on
+    that silent collapse, so duplicates are a contract violation.
+    """
+    try:
+        return json.loads(text, object_pairs_hook=_unique_object_pairs)
+    except DoctrineValidationError:
+        raise
+    except json.JSONDecodeError as exc:
+        _fail("$", f"not valid JSON ({exc.msg})")
 
 
 def parse_doctrine_json(text: str) -> dict[str, Any]:
@@ -191,13 +216,7 @@ def parse_doctrine_json(text: str) -> dict[str, Any]:
     than silently collapsed, which is what makes duplicate actor or capability
     identities impossible to hide.
     """
-    try:
-        document = json.loads(text, object_pairs_hook=_unique_object_pairs)
-    except DoctrineValidationError:
-        raise
-    except json.JSONDecodeError as exc:
-        _fail("$", f"not valid JSON ({exc.msg})")
-    return validate_doctrine(document)
+    return validate_doctrine(parse_json_duplicate_safe(text))
 
 
 # -- validation ------------------------------------------------------------
@@ -386,16 +405,106 @@ def _validate_scope(scope: Any, path: str) -> None:
         _text_list(value["prefixes"], f"{path}.prefixes", non_empty=True)
 
 
+# -- schema migration ------------------------------------------------------
+
+
+class Migration(NamedTuple):
+    """One explicitly reviewed schema step: source -> target -> function."""
+
+    source_schema: str
+    target_schema: str
+    function: Callable[[dict[str, Any]], dict[str, Any]]
+
+
+class MigrationOutcome(NamedTuple):
+    """A migrated document plus the exact ``source -> target`` steps applied."""
+
+    document: dict[str, Any]
+    applied: tuple[tuple[str, str], ...]
+
+
+#: The production migration registry. It is legitimately empty: the only real
+#: Doctrine Contract schema that has ever existed is the current one.
+#: Inventing a fictional legacy schema purely to have something to migrate
+#: would be worse than having nothing here. A future entry must be an exact,
+#: code-reviewed ``(source, target, function)`` step with its own tests.
+MIGRATIONS: tuple[Migration, ...] = ()
+
+
+def migrate_to_current(
+    document: Any, *, registry: Iterable[Migration] = MIGRATIONS
+) -> MigrationOutcome:
+    """Bring ``document`` to the current schema, or fail closed.
+
+    Exactly three outcomes, and no others:
+
+    * schema is already current -- validate and return unchanged, applying
+      nothing;
+    * an exact registered step exists for the document's schema -- apply that
+      one step, check it landed where it claimed, then continue;
+    * anything else -- fail closed. No heuristics, no best effort, no dropping
+      unknown fields, no guessed meaning.
+
+    Each iteration applies precisely one registered step and records its
+    ``source -> target`` pair, so nothing can advance without an explicit,
+    reviewable step, and a cycle in a bad registry is refused rather than
+    looping. Migration never touches doctrine state: it cannot adopt.
+    """
+    value = _object(document, "$")
+    applied: list[tuple[str, str]] = []
+    visited: set[str] = set()
+    while True:
+        schema = value.get("schema")
+        if schema == SCHEMA_ID:
+            validate_doctrine(value)
+            return MigrationOutcome(value, tuple(applied))
+        if not isinstance(schema, str) or not schema.strip():
+            _fail("$.schema", "missing or non-string schema; cannot migrate")
+        if schema in visited:
+            _fail("$.schema", f"migration cycle at {schema!r}; failing closed")
+        visited.add(schema)
+        step = next((item for item in registry if item.source_schema == schema), None)
+        if step is None:
+            _fail("$.schema", f"unsupported doctrine schema: {schema!r}")
+        migrated = step.function(value)
+        if not isinstance(migrated, dict):
+            _fail("$.schema", f"migration {schema!r} did not return an object")
+        if migrated.get("schema") != step.target_schema:
+            _fail(
+                "$.schema",
+                f"migration {schema!r} did not reach {step.target_schema!r}",
+            )
+        applied.append((schema, step.target_schema))
+        value = migrated
+
+
 # -- canonical form and identity ------------------------------------------
 
 
 def canonical_json_bytes(value: Any) -> bytes:
-    """Deterministic JSON encoding for a value that is already known to be fine.
+    """**Permission Slip Canonical JSON v1** -- the exact encoding we use.
 
-    Sorted object keys, no insignificant whitespace, UTF-8 without ASCII
-    escaping. This is the one canonical-JSON encoder the repository uses --
-    doctrine identity and compiled-manifest digests must not drift apart.
-    Validation is the caller's job: the compiled manifests are artefacts, not
+    This is defined here, not borrowed. No RFC 8785 / JCS interoperability is
+    claimed, implemented or tested; other tooling must not assume it. The
+    complete rule set:
+
+    1. **Domain** -- objects, arrays, strings, integers, booleans and null.
+       Doctrine values never contain floats (the contract types every scalar);
+       the compiled-manifest domain may legitimately carry ``null``.
+    2. **Encoding** -- UTF-8.
+    3. **Object keys** -- sorted by Python's string ordering (code-point
+       order), so key order is non-semantic.
+    4. **Arrays** -- preserved in order. Never sorted.
+    5. **Whitespace** -- none. Items are separated by ``,`` and keys from
+       values by ``:``.
+    6. **Non-ASCII text** -- emitted as literal UTF-8, never ``\\uXXXX``
+       escaped.
+    7. **Escaping** -- otherwise ``json.dumps`` defaults: ``"`` and ``\\`` are
+       escaped, control characters use their short form where one exists
+       (``\\n``, ``\\t``, ``\\r``, ``\\b``, ``\\f``) and ``\\uXXXX`` otherwise,
+       and ``/`` is never escaped.
+
+    Validation is the caller's job: compiled manifests are artefacts, not
     doctrine documents.
     """
     return json.dumps(
