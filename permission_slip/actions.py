@@ -514,26 +514,30 @@ class ActionAdapter:
             # Different drive on Windows: preserve the absolute form.
             return resolved.replace("\\", "/")
 
-    def _resolve_push_remote(self, remote: Any) -> str:
-        """Resolve a ``git push`` destination from trusted local Git state.
+    def _effective_push_urls(self, remote: str) -> list[str]:
+        """Every destination ``git push`` would physically reach.
 
-        ``remote`` is caller content: it is only part of the actual command.
-        What it *points at* is read from the repository's own configuration via
-        a non-networking Git query, and must equal the doctrine's canonical
-        repository. Caller-supplied ``remote_url`` / ``repository_url`` /
-        ``canonical_remote`` / ``approved_remote`` style fields are never
-        consulted.
+        Git permits several ``pushurl`` entries and pushes to *all* of them, so
+        the complete set must be proven — not merely the first entry, which is
+        all a non-``--all`` query returns.
 
-        No network access is used: ``git remote get-url --push`` reads local
-        configuration only.
+        ``git remote get-url --push --all`` reads local configuration only; no
+        network call is made. When the token is not a configured remote (a
+        directly supplied URL, or an unknown alias) it is itself the only
+        candidate.
         """
-        if not isinstance(remote, str) or not remote or remote.startswith("-"):
-            raise ActionAdapterError("git push destination could not be established")
-
-        resolved = remote
         try:
             completed = subprocess.run(
-                ["git", "-C", self.repo_root, "remote", "get-url", "--push", remote],
+                [
+                    "git",
+                    "-C",
+                    self.repo_root,
+                    "remote",
+                    "get-url",
+                    "--push",
+                    "--all",
+                    remote,
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -547,21 +551,44 @@ class ActionAdapter:
             ) from None
 
         if completed.returncode == 0:
-            configured = (completed.stdout or "").strip()
-            if configured:
-                resolved = configured
-        # On failure the token itself is the only candidate: this is how a
-        # directly-supplied URL is normalised, and how an unknown alias fails.
+            # Blank entries are preserved: a second, malformed push URL must
+            # fail the count check rather than disappear.
+            return [line.strip() for line in (completed.stdout or "").splitlines()]
+        return [line.strip() for line in remote.splitlines()]
 
-        identity = canonical_repository_identity(resolved)
+    def _resolve_push_remote(self, remote: Any) -> str:
+        """Resolve a ``git push`` destination from trusted local Git state.
+
+        ``remote`` is caller content: it is only part of the actual command.
+        What it *points at* is read from the repository's own configuration via
+        a non-networking Git query, and must equal the doctrine's canonical
+        repository. Caller-supplied ``remote_url`` / ``repository_url`` /
+        ``canonical_remote`` / ``approved_remote`` style fields are never
+        consulted.
+
+        v0.1 deliberately requires **exactly one** effective push URL. Two URLs
+        are never reasoned about as "probably equivalent" — one exact
+        destination keeps the authority model simple and truthful.
+        """
+        if not isinstance(remote, str) or not remote or remote.startswith("-"):
+            raise ActionAdapterError("git push destination could not be established")
+
+        urls = self._effective_push_urls(remote)
+        if len(urls) != 1:
+            raise ActionAdapterError(
+                f"push destination {remote!r} has {len(urls)} effective push "
+                "URLs; exactly one is required"
+            )
+
+        identity = canonical_repository_identity(urls[0])
         if identity is None:
             raise ActionAdapterError(
-                f"push destination {resolved!r} is not a recognised canonical "
+                f"push destination {urls[0]!r} is not a recognised canonical "
                 "GitHub repository"
             )
         if identity != self.canonical_repository_identity:
             raise ActionAdapterError(
-                f"push destination {resolved!r} resolves to {identity}, which is "
+                f"push destination {urls[0]!r} resolves to {identity}, which is "
                 f"not the canonical project repository "
                 f"{self.canonical_repository_identity}"
             )

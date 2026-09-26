@@ -63,7 +63,7 @@ Layout:
 | `permission_slip/executor.py` | Safe fixture external executor |
 | `permission_slip/spike.py` | Vertical orchestration |
 | `tethers-fixture/` | Compiled inspectable Tethers runtime/config fixtures |
-| `tests/` | The 26-case end-to-end matrix + adapter/pinning tests |
+| `tests/` | The 33-case end-to-end matrix + adapter/pinning tests |
 | `tests/support.py` | Temporary Git repositories with controlled remotes (no network) |
 | `scripts/` | Toolchain bootstrap and spike runner |
 
@@ -88,18 +88,28 @@ derives authority-relevant facts **from the actual operation**:
   `gh-pages`, `arbitrary-name`, ...) is *not* evidence, is not silently
   re-described as a history rewrite, and fails closed as unmappable → `DENY`;
 - the remote *alias* is caller content and is never trusted by name. The
-  adapter runs `git -C <repo> remote get-url --push <alias>` (local config
-  only, no network) and compares the resolved URL against
+  adapter runs `git -C <repo> remote get-url --push --all <alias>` (local
+  config only, no network) and compares the resolved URL against
   `project.canonical_repository`, normalising the small set of equivalent
   GitHub transport forms to `github.com/owner/repo`. Caller-supplied
   `remote_url` / `repository_url` / `canonical_remote` / `approved_remote`
   fields are forbidden keys and are never read;
+- **the complete set of effective push URLs is proven, not just the first.**
+  Git permits several `pushurl` entries and physically pushes to all of them,
+  so v0.1 requires **exactly one** effective destination: zero URLs, two URLs
+  (even two that normalise to the same repository), or a malformed URL all
+  fail closed as unmappable → `DENY`. Two destinations are never reasoned
+  about as "probably equivalent";
 - Git push actions are bound **inside Tethers** to the exact remote/ref effect:
   `git.push.feature` and `git.history.rewrite` carry `remote_repository`,
   `destination_ref` and `push_effect` as Tether action arguments, so two
   materially different pushes (e.g. `force:refs/heads/main` vs
   `force:refs/heads/release`) receive different Tethers `argument_digest`s and
   cannot share one approval;
+- the external executor consumes only the normalized action Tethers admitted.
+  It never re-reads the raw caller operation, a remote alias or a `remote_url`
+  to decide the physical target, and it records the admitted
+  `remote_repository` / `destination_ref` / `push_effect` in its effect log;
 - external destination comes from the actual target;
 - secret material takes precedence over ordinary repository upload;
 - monetary amount/source comes from the trusted payment fields, and a
@@ -128,6 +138,21 @@ outcome
 PREPARE is informational; human approval alone does not authorise execution.
 **COMMIT is the last-responsible-moment re-check**, and nothing is physically
 executed before it succeeds. Approval is exact and one-shot.
+
+Immediately before COMMIT, Permission Slip applies a monotonic host invariant:
+
+> prepared normalized action
+> == freshly trusted-normalized action right now
+
+The operation envelope and trusted actor identity are frozen at the start of
+adjudication. If trusted external state (such as Git remote configuration) has
+changed, if normalization now fails, or if the operation envelope itself was
+mutated after PREPARE, the stale prepared action is **not** committed and
+nothing executes — the receipt reports `trusted_context_changed` and a fresh
+attempt is required. A human approval does not rescue stale context.
+
+This check may only stop stale execution; it never re-decides authority and can
+never turn DENY/ASK into ALLOW. Tethers remains the sole semantic authority.
 
 Supervision law, preserved in code and docs:
 
@@ -188,6 +213,14 @@ SHA exercised. To provision a fresh pinned Tethers checkout into `.deps/`
   Any other host, scheme, port, path shape or malformed URL fails closed as
   unmappable. There is no generic forge-URL framework and no remote policy
   language.
+- v0.1 supports **exactly one effective push destination** per push. Git's
+  multi-`pushurl` capability is not supported: two destinations always fail
+  closed, even when both normalise to the same repository. A general
+  multi-destination push policy is deliberately not built.
+- COMMIT-time trusted-context revalidation compares the frozen operation
+  envelope and the freshly normalized authority-relevant result. It is a
+  safety net for host-supplied trusted state, not a substitute for Tethers'
+  own COMMIT re-check.
 - `git merge` still binds only the local `repository` argument: it is not a
   remote/ref push effect, so Packet 1C does not extend its action identity.
 

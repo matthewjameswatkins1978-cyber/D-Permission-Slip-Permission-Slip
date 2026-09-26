@@ -30,8 +30,11 @@ from tests.support import (
     EVIL_REMOTE_URL,
     OTHER_GITHUB_REMOTE_URL,
     add_remote,
+    clear_push_urls,
     init_git_repo,
+    push_urls,
     set_push_url,
+    set_push_urls,
     set_remote_url,
 )
 
@@ -513,6 +516,53 @@ class PushRemoteBindingTests(unittest.TestCase):
 
     def test_direct_unknown_url_is_unmappable(self):
         self.assert_unmappable("https://evil.example/x.git", "feature/foo")
+
+    # -- the complete set of effective push URLs ---------------------------
+
+    def test_single_explicit_canonical_push_url_allows(self):
+        set_push_urls(self.repo, CANONICAL_REPOSITORY)
+        self.assertEqual(self.push("origin", "feature/foo").action, "git.push.feature")
+
+    def test_no_explicit_push_url_falls_back_to_the_fetch_url(self):
+        clear_push_urls(self.repo)
+        self.assertEqual(self.push("origin", "feature/foo").action, "git.push.feature")
+
+    def test_canonical_first_plus_evil_second_push_url_is_unmappable(self):
+        # Git physically pushes to BOTH. Seeing only the first must not grant
+        # authority for the second.
+        set_push_urls(self.repo, CANONICAL_REPOSITORY, EVIL_REMOTE_URL)
+        self.assertEqual(len(push_urls(self.repo)), 2)
+        self.assert_unmappable("origin", "feature/foo")
+        self.assert_unmappable("--force", "origin", "main")
+
+    def test_evil_first_plus_canonical_second_push_url_is_unmappable(self):
+        set_push_urls(self.repo, EVIL_REMOTE_URL, CANONICAL_REPOSITORY)
+        self.assertEqual(len(push_urls(self.repo)), 2)
+        self.assert_unmappable("origin", "feature/foo")
+        self.assert_unmappable("--force", "origin", "main")
+
+    def test_two_canonical_equivalent_push_urls_fail_closed(self):
+        # Two URLs that normalise to the same repository are still two
+        # destinations. v0.1 does not reason that they are "probably" equal.
+        set_push_urls(self.repo, CANONICAL_REPOSITORY, CANONICAL_REPOSITORY + ".git")
+        self.assertEqual(len(push_urls(self.repo)), 2)
+        self.assert_unmappable("origin", "feature/foo")
+
+    def test_three_push_urls_fail_closed(self):
+        set_push_urls(
+            self.repo, CANONICAL_REPOSITORY, CANONICAL_REPOSITORY, EVIL_REMOTE_URL
+        )
+        self.assert_unmappable("origin", "feature/foo")
+
+    def test_single_evil_push_url_is_unmappable(self):
+        set_push_urls(self.repo, EVIL_REMOTE_URL)
+        self.assert_unmappable("origin", "feature/foo")
+
+    def test_exact_one_destination_rule_holds_after_restoring(self):
+        set_push_urls(self.repo, CANONICAL_REPOSITORY, EVIL_REMOTE_URL)
+        self.assert_unmappable("origin", "feature/foo")
+        set_push_urls(self.repo, CANONICAL_REPOSITORY)
+        self.assertEqual(self.push("origin", "feature/foo").action, "git.push.feature")
 
     # -- force / consequential binding -------------------------------------
 

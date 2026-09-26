@@ -36,6 +36,7 @@ from tests.support import (
     EVIL_REMOTE_URL,
     add_remote,
     init_git_repo,
+    set_push_urls,
     set_remote_url,
 )
 
@@ -422,6 +423,143 @@ class VerticalSpikeTests(unittest.TestCase):
         self.assertEqual(receipt.reason, "unmappable_operation")
         self.assertFalse(receipt.executed)
         self.assertFalse((self.sandbox() / "history-rewrite.log").exists())
+
+    # -- effect integrity: complete push URL set + COMMIT revalidation ------
+
+    def test_27_multiple_push_urls_are_denied_without_execution(self):
+        set_push_urls(self.repo, CANONICAL_REPOSITORY, EVIL_REMOTE_URL)
+        first = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(first.decision, DECISION_DENY)
+        self.assertEqual(first.reason, "unmappable_operation")
+        self.assertFalse(first.executed)
+
+        set_push_urls(self.repo, CANONICAL_REPOSITORY, CANONICAL_REPOSITORY + ".git")
+        second = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(second.decision, DECISION_DENY)
+        self.assertEqual(second.reason, "unmappable_operation")
+        self.assertFalse(second.executed)
+        self.assertFalse((self.sandbox() / "pushes.log").exists())
+
+        set_push_urls(self.repo, CANONICAL_REPOSITORY)
+        restored = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(restored.decision, DECISION_ALLOW)
+        self.assertTrue(restored.executed)
+
+    def test_28_feature_push_remote_drift_rejected_at_commit_boundary(self):
+        operation = {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]}
+
+        def retarget(slip, prepared):
+            set_remote_url(self.repo, "origin", EVIL_REMOTE_URL)
+
+        receipt = self.ps.run(
+            operation, "worker-agent", between_prepare_and_commit=retarget
+        )
+        self.assertEqual(receipt.decision, DECISION_DENY)
+        self.assertEqual(receipt.reason, "trusted_context_changed")
+        self.assertIn("trusted normalization failed", receipt.error)
+        self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "pushes.log").exists())
+
+    def test_29_force_push_remote_drift_is_not_rescued_by_approval(self):
+        operation = {"tool": "git", "argv": ["push", "--force", "origin", "main"]}
+
+        def retarget(slip, prepared):
+            set_remote_url(self.repo, "origin", EVIL_REMOTE_URL)
+
+        receipt = self.ps.approve(
+            operation, "worker-agent", between_prepare_and_commit=retarget
+        )
+        # A human approval was granted for the prepared request...
+        self.assertIsNotNone(receipt.approval_id)
+        # ...but stale trusted context must not let it commit or execute.
+        self.assertEqual(receipt.decision, DECISION_DENY)
+        self.assertEqual(receipt.reason, "trusted_context_changed")
+        self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "history-rewrite.log").exists())
+
+    def test_30_destination_ref_mutation_after_prepare_is_rejected(self):
+        operation = {"tool": "git", "argv": ["push", "--force", "origin", "main"]}
+
+        def mutate(slip, prepared):
+            operation["argv"] = ["push", "--force", "origin", "release"]
+
+        receipt = self.ps.approve(
+            operation, "worker-agent", between_prepare_and_commit=mutate
+        )
+        self.assertEqual(receipt.decision, DECISION_DENY)
+        self.assertEqual(receipt.reason, "trusted_context_changed")
+        self.assertIn("trusted arguments changed", receipt.error)
+        self.assertIn("refs/heads/main", receipt.error)
+        self.assertIn("refs/heads/release", receipt.error)
+        self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "history-rewrite.log").exists())
+
+    def test_31_authority_irrelevant_envelope_mutation_is_still_rejected(self):
+        operation = {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]}
+
+        def mutate(slip, prepared):
+            operation["note"] = "unrelated caller field added after PREPARE"
+
+        receipt = self.ps.run(
+            operation, "worker-agent", between_prepare_and_commit=mutate
+        )
+        self.assertEqual(receipt.decision, DECISION_DENY)
+        self.assertEqual(receipt.reason, "trusted_context_changed")
+        self.assertIn("operation envelope changed", receipt.error)
+        self.assertFalse(receipt.executed)
+        self.assertFalse((self.sandbox() / "pushes.log").exists())
+
+    def test_32_unchanged_trusted_context_still_commits(self):
+        operation = {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]}
+
+        def unchanged(slip, prepared):
+            pass
+
+        receipt = self.ps.run(
+            operation, "worker-agent", between_prepare_and_commit=unchanged
+        )
+        self.assertEqual(receipt.decision, DECISION_ALLOW)
+        self.assertEqual(receipt.reason, "current_policy_allow")
+        self.assertTrue(receipt.executed)
+        self.assertEqual(receipt.outcome, "succeeded")
+        self.assertTrue((self.sandbox() / "pushes.log").exists())
+
+    def test_33_executor_records_the_bound_admitted_effect(self):
+        # The executor consumes only the normalized action Tethers admitted; it
+        # never re-reads the raw caller remote alias or ref labels.
+        feature = self.ps.run(
+            {"tool": "git", "argv": ["push", "origin", "feature/vertical-spike"]},
+            "worker-agent",
+        )
+        self.assertEqual(feature.decision, DECISION_ALLOW)
+        feature_log = (self.sandbox() / "pushes.log").read_text(encoding="utf-8")
+        self.assertIn(f"remote={CANONICAL_IDENTITY}", feature_log)
+        self.assertIn("ref=refs/heads/feature/vertical-spike", feature_log)
+        self.assertIn("effect=push:refs/heads/feature/vertical-spike", feature_log)
+        self.assertNotIn("origin", feature_log)
+
+        rewrite = self.ps.approve(
+            {"tool": "git", "argv": ["push", "--force", "origin", "main"]},
+            "worker-agent",
+        )
+        self.assertEqual(rewrite.decision, DECISION_ALLOW)
+        self.assertTrue(rewrite.executed)
+        rewrite_log = (self.sandbox() / "history-rewrite.log").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f"remote={CANONICAL_IDENTITY}", rewrite_log)
+        self.assertIn("ref=refs/heads/main", rewrite_log)
+        self.assertIn("effect=force:refs/heads/main", rewrite_log)
+        self.assertNotIn("origin", rewrite_log)
 
     def test_12_public_publication_asks(self):
         receipt = self.ps.run(publish_op(), "worker-agent")

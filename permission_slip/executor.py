@@ -54,6 +54,19 @@ class FixtureExecutor:
 
     # -- helpers -----------------------------------------------------------
 
+    @staticmethod
+    def bound_push_effect(action: str, args: dict[str, Any]) -> str:
+        """The admitted effect, taken only from the normalized action.
+
+        The executor never re-reads the raw operation, a caller remote alias,
+        a caller ``remote_url`` or caller ref labels: it records exactly what
+        Tethers admitted.
+        """
+        return (
+            f"{action} remote={args.get('remote_repository')} "
+            f"ref={args.get('destination_ref')} effect={args.get('push_effect')}"
+        )
+
     def _sandbox_path(self, *parts: str) -> Path:
         path = self.sandbox.joinpath(*parts).resolve()
         if not str(path).startswith(str(self.sandbox)):
@@ -119,7 +132,7 @@ class FixtureExecutor:
             effects.append(f"edited:{rel}")
 
         elif action == "git.push.feature":
-            self._append("pushes.log", f"push feature {args.get('repository')}")
+            self._append("pushes.log", self.bound_push_effect(action, args))
             effects.append("feature-pushed")
 
         elif action == "git.merge.accepted":
@@ -127,7 +140,7 @@ class FixtureExecutor:
             effects.append("accepted-merge")
 
         elif action == "git.history.rewrite":
-            self._append("history-rewrite.log", f"rewrite {args.get('repository')}")
+            self._append("history-rewrite.log", self.bound_push_effect(action, args))
             effects.append("history-rewritten")
 
         elif action == "data.external_upload.repository":

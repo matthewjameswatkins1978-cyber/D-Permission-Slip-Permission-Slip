@@ -21,6 +21,7 @@ Supervision law preserved in code and docs here:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import uuid
@@ -76,6 +77,21 @@ class Receipt:
 
 class UnknownOperationError(RuntimeError):
     pass
+
+
+def operation_digest(operation: Any) -> str:
+    """Canonical digest of an operation envelope.
+
+    Used to freeze the caller-supplied request at the start of adjudication so
+    that a later mutation of the same object is detectable at COMMIT.
+    """
+    try:
+        payload = json.dumps(
+            operation, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+        )
+    except (TypeError, ValueError):
+        payload = repr(operation)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class PermissionSlip:
@@ -152,6 +168,13 @@ class PermissionSlip:
         simulate_failure: bool = False,
         between_prepare_and_commit: Callable[["PermissionSlip", dict[str, Any]], None] | None = None,
     ) -> Receipt:
+        # Freeze the caller request and trusted actor identity at the start of
+        # adjudication. The actor binding is immutable (it must be a str key of
+        # the harness profile); the operation envelope is frozen as a digest so
+        # that a later mutation of the same object is detectable at COMMIT.
+        frozen_operation_digest = operation_digest(operation)
+        frozen_actor_id = actor_id
+
         try:
             normalized = self.adapter.normalize(operation, actor_id)
         except UntrustedActorError as exc:
@@ -175,6 +198,9 @@ class PermissionSlip:
 
         return self._adjudicate(
             normalized,
+            operation=operation,
+            actor_id=frozen_actor_id,
+            frozen_operation_digest=frozen_operation_digest,
             approval=approval,
             simulate_failure=simulate_failure,
             between_prepare_and_commit=between_prepare_and_commit,
@@ -223,6 +249,9 @@ class PermissionSlip:
         self,
         normalized: NormalizedAction,
         *,
+        operation: dict[str, Any],
+        actor_id: str,
+        frozen_operation_digest: str,
         approval: str | None,
         simulate_failure: bool,
         between_prepare_and_commit: Callable[["PermissionSlip", dict[str, Any]], None] | None,
@@ -297,10 +326,79 @@ class PermissionSlip:
             receipt,
             capability,
             normalized,
+            operation=operation,
+            actor_id=actor_id,
+            frozen_operation_digest=frozen_operation_digest,
             simulate_failure=simulate_failure,
         )
 
-    def _commit_and_execute(self, prepared, receipt, capability, normalized, *, simulate_failure):
+    def revalidate_trusted_context(
+        self,
+        prepared_action: NormalizedAction,
+        operation: dict[str, Any],
+        actor_id: str,
+        frozen_operation_digest: str,
+    ) -> str | None:
+        """Host invariant at the COMMIT boundary.
+
+            prepared normalized action
+            == freshly trusted-normalized action right now
+
+        Trusted external state (such as Git remote configuration) may have
+        changed since PREPARE. Tethers rechecks its own policy at COMMIT but it
+        cannot observe host-supplied trusted state, so Permission Slip must.
+
+        This is a monotonic safety check: it may only stop a stale execution.
+        It never re-decides authority and can never turn DENY/ASK into ALLOW.
+        """
+        try:
+            fresh = self.adapter.normalize(operation, actor_id)
+        except ActionAdapterError as exc:
+            return f"trusted normalization failed at COMMIT: {exc}"
+
+        if fresh.action != prepared_action.action:
+            return f"capability changed: {prepared_action.action} -> {fresh.action}"
+        if fresh.actor_id != prepared_action.actor_id:
+            return (
+                f"actor identity changed: {prepared_action.actor_id} -> {fresh.actor_id}"
+            )
+        if fresh.arguments != prepared_action.arguments:
+            return (
+                "trusted arguments changed: "
+                f"{prepared_action.arguments!r} -> {fresh.arguments!r}"
+            )
+        if fresh.facts != prepared_action.facts:
+            return (
+                f"trusted facts changed: {prepared_action.facts!r} -> {fresh.facts!r}"
+            )
+        # Authority is unchanged; the envelope itself must still be the one that
+        # was frozen, so any mutation of the caller's request is noticed too.
+        if operation_digest(operation) != frozen_operation_digest:
+            return "operation envelope changed after PREPARE"
+        return None
+
+    def _commit_and_execute(
+        self,
+        prepared,
+        receipt,
+        capability,
+        normalized,
+        *,
+        operation,
+        actor_id,
+        frozen_operation_digest,
+        simulate_failure,
+    ):
+        stale = self.revalidate_trusted_context(
+            normalized, operation, actor_id, frozen_operation_digest
+        )
+        if stale is not None:
+            # Do not COMMIT the stale prepared action, and do not execute.
+            receipt.decision = DECISION_DENY
+            receipt.reason = "trusted_context_changed"
+            receipt.error = stale
+            return receipt
+
         try:
             dispatch = self._session.commit(prepared["prepared_id"])
         except Exception as exc:

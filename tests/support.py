@@ -66,6 +66,50 @@ def add_remote(repo: str | Path, name: str, url: str) -> None:
     _git("remote", "add", name, url, cwd=Path(repo))
 
 
+def _unset_push_urls(repo: Path, name: str) -> None:
+    # ``git remote set-url --push`` refuses to replace a multi-valued pushurl,
+    # so the key is cleared explicitly first. Absent key is not an error here.
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "--unset-all", f"remote.{name}.pushurl"],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def set_push_urls(repo: str | Path, *urls: str, name: str = "origin") -> None:
+    """Set the push URL list exactly, in order.
+
+    ``set_push_urls(repo, canonical, evil)`` produces the hostile
+    two-destination configuration Git would physically push to.
+    """
+    repo = Path(repo)
+    _unset_push_urls(repo, name)
+    for url in urls:
+        _git("remote", "set-url", "--add", "--push", name, url, cwd=repo)
+
+
 def set_push_url(repo: str | Path, name: str, url: str) -> None:
-    """Retarget only the *push* URL, leaving the fetch URL untouched."""
-    _git("remote", "set-url", "--push", name, url, cwd=Path(repo))
+    """Replace a remote's push URL with exactly one value."""
+    set_push_urls(repo, url, name=name)
+
+
+def clear_push_urls(repo: str | Path, name: str = "origin") -> None:
+    """Remove explicit push URLs so the fetch URL is the only destination."""
+    _unset_push_urls(Path(repo), name)
+
+
+def push_urls(repo: str | Path, name: str = "origin") -> list[str]:
+    """The complete effective push URL set, read straight from Git."""
+    completed = subprocess.run(
+        ["git", "-C", str(Path(repo)), "remote", "get-url", "--push", "--all", name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return []
+    return [line.strip() for line in (completed.stdout or "").splitlines()]
