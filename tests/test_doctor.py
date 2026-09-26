@@ -22,7 +22,12 @@ from permission_slip.doctor import (
 )
 from permission_slip.state import STATE_DIR_ENV
 from permission_slip.tethers_install import DEV_UNVERIFIED_ENV, GATE_ENV
-from tests.fake_tethers import bundle_env, isolated_env, make_release_bundle
+from tests.fake_tethers import (
+    FAKE_PRODUCT_VERSION,
+    bundle_env,
+    isolated_env,
+    make_release_bundle,
+)
 
 
 def plat() -> str:
@@ -81,7 +86,7 @@ class DoctorTests(unittest.TestCase):
             lines,
             [
                 f"Permission Slip {__version__.rsplit('.', 1)[0]}",
-                "Tethers: 9.9.9",
+                f"Tethers: {FAKE_PRODUCT_VERSION}",
                 f"Protocol: {report['tethers']['authority_protocol']}",
                 f"Platform: {report['platform']['system']} {report['platform']['machine']}",
                 "State: ready",

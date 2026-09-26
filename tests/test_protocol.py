@@ -20,7 +20,13 @@ from permission_slip.tethers_client import (
     TethersUnavailable,
 )
 from permission_slip.tethers_install import discover_tethers
-from tests.fake_tethers import bundle_env, isolated_env, make_release_bundle, mode_slug
+from tests.fake_tethers import (
+    FAKE_PRODUCT_VERSION,
+    bundle_env,
+    isolated_env,
+    make_release_bundle,
+    mode_slug,
+)
 
 MINIMAL_CONFIG = {
     "format_version": "0.1",
@@ -87,7 +93,7 @@ class ProtocolTests(GateHarness, unittest.TestCase):
         self.assertEqual(result["protocol"], AUTHORITY_PROTOCOL)
         self.assertIn(AUTHORITY_PROTOCOL, result["protocol_versions"])
         self.assertEqual(result["provider_invocations"], 0)
-        self.assertEqual(result["product_version"], "9.9.9")
+        self.assertEqual(result["product_version"], FAKE_PRODUCT_VERSION)
 
     def test_ndjson_process_boundary_is_preserved(self):
         session = self.session("ok")
@@ -184,7 +190,7 @@ class ProtocolTests(GateHarness, unittest.TestCase):
             gate_bin=self.root / "absent-gate.exe",
             engine_bin=self.root / "absent-engine.exe",
             install_root=None,
-            product_version=None,
+            product_version="0.8.1",
             authority_protocol=AUTHORITY_PROTOCOL,
             gate_sha256="0" * 64,
             engine_sha256="0" * 64,
@@ -325,7 +331,7 @@ class HelloContractTests(GateHarness, unittest.TestCase):
         mode = 'set:product_version="0.0.1"'
         installation = self.installation(mode, probe=True)
         # describe --json still reports the bundle's own product version.
-        self.assertEqual(installation.product_version, "9.9.9")
+        self.assertEqual(installation.product_version, FAKE_PRODUCT_VERSION)
 
         slug = mode_slug(mode)
         session = GateSession(
@@ -345,7 +351,7 @@ class HelloContractTests(GateHarness, unittest.TestCase):
 
     def test_agreeing_product_versions_are_accepted(self):
         installation = self.installation("ok", probe=True)
-        self.assertEqual(installation.product_version, "9.9.9")
+        self.assertEqual(installation.product_version, FAKE_PRODUCT_VERSION)
         slug = mode_slug("ok")
         session = GateSession(
             config_path=self.config,

@@ -1,0 +1,50 @@
+{
+  "schema": "permission-slip.tethers-release-lock/1",
+  "repository": "https://github.com/matthewjameswatkins1978-cyber/tethers-lang",
+  "tag": "v0.8.1",
+  "source_commit": "2710e867768f33be3e6bd1e722004c1c50e3f53b",
+  "source_tree": "ef1fe230bcf83498bd2b168a57f4570e02d3a046",
+  "product_version": "0.8.1",
+  "authority_protocol": "tethers.authority/1",
+  "targets": [
+    {
+      "target": "windows-x86-64",
+      "system": "Windows",
+      "machine": "x86_64",
+      "sys_platform": "win32",
+      "release_asset": "Tethers-0.8.1-windows-x64.zip",
+      "release_asset_sha256": "0beddcaeba31ee7ba680d6f981cfde14bc6168a85ef7205ca423f0435d6e31fc",
+      "manifest_asset": "Tethers-0.8.1-windows-x64-manifest.json",
+      "manifest_asset_sha256": "044bef6a55221a3be5affb3ce8a9322b3d3d615afcc5561edd4854dbcbecd3eb",
+      "tethers_release_platform": "windows-x64",
+      "gate_executable": "bin/tethers.exe",
+      "engine_executable": "bin/tethers-engine.exe"
+    },
+    {
+      "target": "linux-x86-64",
+      "system": "Linux",
+      "machine": "x86_64",
+      "sys_platform": "linux",
+      "release_asset": "Tethers-0.8.1-linux-x64.tar.gz",
+      "release_asset_sha256": "90c7e2124ce01517a239f104ec00418bf3bcac1b10076c75f46b908276939380",
+      "manifest_asset": "Tethers-0.8.1-linux-x64-manifest.json",
+      "manifest_asset_sha256": "839bce0213ecf6ba5ff0a519056cc566c6a7b17584a8b6cd4708ad4fef01507b",
+      "tethers_release_platform": "linux-x64",
+      "gate_executable": "bin/tethers",
+      "engine_executable": "bin/tethers-engine"
+    },
+    {
+      "target": "macos-arm64",
+      "system": "macOS",
+      "machine": "arm64",
+      "sys_platform": "darwin",
+      "release_asset": "Tethers-0.8.1-macos-arm64.tar.gz",
+      "release_asset_sha256": "99becaa5495c402512db1704cc7e1977894d1ff094dd35734e34695b539ccff2",
+      "manifest_asset": "Tethers-0.8.1-macos-arm64-manifest.json",
+      "manifest_asset_sha256": "0ba8e4a9ec89cca6660d47a93927b21061060229d6d89611a04404f68b24fb71",
+      "tethers_release_platform": "macos-arm64",
+      "gate_executable": "bin/tethers",
+      "engine_executable": "bin/tethers-engine"
+    }
+  ]
+}

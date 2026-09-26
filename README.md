@@ -69,10 +69,13 @@ Layout:
 | `permission_slip/executor.py` | Safe fixture external executor |
 | `permission_slip/spike.py` | Vertical orchestration |
 | `tethers-fixture/` | Compiled inspectable Tethers runtime/config fixtures |
-| `tests/` | 164 tests: v0.1 authority matrix, discovery, protocol, doctor, state |
+| `tests/` | Authority matrix, discovery, protocol, doctor, state, version support, release lock |
 | `tests/fake_tethers.py` | Fake released-Tethers bundles (fakes, clearly separated) |
 | `tests/support.py` | Temporary Git repositories with controlled remotes (no network) |
-| `scripts/` | Spike runner + contributor-only Tethers source tooling |
+| `scripts/` | Spike runner, release acquisition and the product proof |
+| `verification/tethers-v0.8.1.lock.json` | Accepted published Tethers 0.8.1 release lock (assets + SHA-256) |
+| `scripts/tethers_release.py` | Acquire/verify/extract the published release (setup machinery, never runtime) |
+| `scripts/tethers_product_proof.py` | Real packaged-Tethers consumer proof: discovery -> doctor -> hello -> lifecycle |
 
 ## Trust boundary
 
@@ -211,11 +214,37 @@ is required**, and normal operation never probes `.deps/tethers`,
 | released bundle matching `SHA256SUMS` | `PASS` | starts |
 | no release manifest | not `PASS` | **refuses before the Gate starts** |
 | manifest mismatch | not `PASS` | **refuses** |
+| verified but unsupported product version | not `PASS` (version) | **refuses** |
 | dev override active | not `PASS` (`unverified/dev`) | **refuses** |
 | explicit source checkout | not `PASS` (dev) | **refuses** |
 
 The invariant is one-way but absolute: **if `doctor` says the installation is
 not verified for authority, a default authority session does not proceed.**
+
+### Supported production Tethers version
+
+Production authority accepts one explicit set of Tethers product versions
+(`SUPPORTED_AUTHORITY_PRODUCT_VERSIONS` in `permission_slip/tethers_install.py`):
+
+| product version | production authority |
+| --- | --- |
+| `0.8.1` | accepted |
+| `0.8.0` | refused - genuine, but unsupported |
+| any other / future version | refused until deliberately adopted |
+| missing or unknown | refused |
+
+There is deliberately no semver compatibility engine: adopting a new Tethers
+release is a one-line, reviewable change. This is a *product support* decision,
+never a corruption report - a verified 0.8.0 bundle is still reported as
+verified, and doctor says so. Protocol compatibility is never inferred from a
+product version; it is negotiated at the `tethers.authority/1` `hello`.
+
+`verification/tethers-v0.8.1.lock.json` pins the accepted published release
+(assets and SHA-256) for the three official targets, and
+`scripts/tethers_release.py` acquires and verifies those exact bytes before
+anything is extracted. Checksums are bounded interim provenance: the release is
+not third-party signed and its macOS packages are not notarized.
+
 
 Development authority exists only through an explicit call-boundary opt-in —
 `GateSession(..., allow_unverified_for_development=True)` or
@@ -263,7 +292,7 @@ permission-slip doctor --json   # versioned permission-slip.doctor/1 envelope
 
 ```
 Permission Slip 0.2
-Tethers: 0.8.0
+Tethers: 0.8.1
 Protocol: tethers.authority/1
 Platform: Windows x86_64
 State: ready
@@ -271,7 +300,10 @@ State: ready
 
 The JSON is Permission Slip-owned, versioned, deterministic, and independent of
 the prose. Check statuses are `PASS`, `FAIL`, `UNAVAILABLE`, `UNSUPPORTED`.
-Exit codes: `0` PASS, `1` FAIL, `2` UNAVAILABLE, `3` UNSUPPORTED.
+Exit codes: `0` PASS, `1` FAIL, `2` UNAVAILABLE, `3` UNSUPPORTED. The envelope
+also carries `product_version`, `supported_product_versions` and
+`product_version_supported`, so a verified-but-unsupported product is
+distinguishable from a broken installation in machine-readable form.
 
 ### Provisioning
 
@@ -286,8 +318,10 @@ permission-slip doctor           # then reports ready / not ready
 
 ## Running the suite
 
-Prerequisites: Python 3 (3.11+), Git, PowerShell 7, and an installed Tethers
-runtime (`tethers` on `PATH`, or `TETHERS_GATE_BIN` / `TETHERS_ENGINE_BIN`).
+Prerequisites: Python 3 (3.11+), Git, PowerShell 7, and an installed **Tethers
+0.8.1** runtime (`TETHERS_ROOT` pointing at an extracted release, else `tethers`
+on `PATH`, else `TETHERS_GATE_BIN` / `TETHERS_ENGINE_BIN`). Any other product
+version is refused as production authority.
 
 ```powershell
 scripts\run-spike.ps1
@@ -296,12 +330,38 @@ scripts\run-spike.ps1
 This compiles the doctrine, prints the Tethers product identity being consumed,
 runs `permission-slip doctor`, and runs the full test matrix.
 
+To acquire and verify the exact published release bytes before running
+anything, on any of the three official targets:
+
+```bash
+python scripts/tethers_release.py acquire --lock verification/tethers-v0.8.1.lock.json
+python scripts/tethers_product_proof.py --lock verification/tethers-v0.8.1.lock.json
+```
+
+The second command walks the whole consumer path (discovery, identity,
+provenance, provisioning, doctor, a real `tethers.authority/1` hello, then the
+existing ALLOW / ASK / DENY / OUTCOME lifecycle) against the packaged product
+and writes a JSON report. `.github/workflows/permission-slip-tethers-product-proof.yml`
+runs both plus the suite on Windows x86-64, Linux x86-64 and macOS ARM64.
+
 `scripts\bootstrap-tethers.ps1` is **contributor/development tooling only**: it
 builds a Tethers source checkout for people working on Tethers itself. It is
 not the normal install path and is not how Permission Slip finds Tethers.
 
 ## Known limitations
 
+- **Provenance is bounded and unsigned.** Tethers 0.8.1 is pinned by
+  `verification/tethers-v0.8.1.lock.json` SHA-256 values plus the
+  `tethers.release/1` manifest and the bundle `SHA256SUMS`. That pins *bytes*,
+  not publisher identity: there is no PKI, no Sigstore and no third-party
+  signature. macOS packages are not Apple Developer ID signed or notarized, so
+  public Gatekeeper-trusted distribution is unavailable.
+- **Known Tethers 0.8.1 release defect (accepted, not worked around).** The
+  Linux and macOS package-internal `SHA256SUMS` contains one self-referential
+  `./SHA256SUMS` entry that cannot verify itself. `scripts/tethers_release.py`
+  *identifies* exactly that one entry as `tethers-0.8.1-self-referential-sha256sums`
+  and requires every other entry to verify; it is not a general
+  "ignore checksum failures" path. Windows packages have no such entry.
 - Tethers' configured runtime scope resolver implements `PathPrefix` (and
   `Unrestricted`), not the declared `Repository`/`Calendar` scopes. The spike
   uses `PathPrefix` plus **distinct semantic capabilities** for history
@@ -339,10 +399,18 @@ not the normal install path and is not how Permission Slip finds Tethers.
   remote/ref push effect, so Packet 1C does not extend its action identity.
 - Known install locations are only probed where a Tethers layout has actually
   been observed. Linux/macOS install locations are not guessed at: on those
-  platforms `PATH` is the route, pending released 0.8.1 package proof.
+  platforms the route is `PATH` or an explicit `TETHERS_ROOT`. Released 0.8.1
+  packages for Windows x86-64, Linux x86-64 and macOS ARM64 are proven by the
+  Tethers release and consumed by
+  `.github/workflows/permission-slip-tethers-product-proof.yml`; macOS Intel is
+  not claimed by Permission Slip.
 - `tethers describe --json` is treated as best-effort reporting; the authority
-  `hello` is the contract. If a release stops shipping `describe --json`,
-  doctor reports identity as `UNAVAILABLE` rather than guessing.
+  `hello` is the contract. Tethers 0.8.1 no longer reports
+  `supported_protocol_versions` / `supported_language_versions` / `features`
+  there (0.8.0 did); protocol compatibility is negotiated at the `hello`, and
+  `product_version` still comes from `describe`. If a release stops shipping
+  `describe --json`, doctor reports identity as `UNAVAILABLE` rather than
+  guessing.
 - Doctor's protocol probe uses a throwaway temporary workspace so it never
   writes to Permission Slip's real host-data root; consequently it proves
   `hello` negotiation, not a full authority evaluation.

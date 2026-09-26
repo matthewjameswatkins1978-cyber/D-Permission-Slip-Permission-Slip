@@ -94,6 +94,38 @@ ACCEPTED_AUTHORITY_VERIFICATION = "verified"
 #: The only provenance form acceptable for production authority use.
 ACCEPTED_AUTHORITY_PROVENANCE = "release_manifest"
 
+#: Tethers product versions that production authority accepts. Deliberately an
+#: explicit list, not a semver range: adopting another Tethers release is a
+#: deliberate act recorded here, so an unknown future version fails closed
+#: instead of being guessed compatible. Protocol compatibility is never
+#: inferred from a product version -- ``tethers.authority/1`` is checked
+#: separately at the ``hello``.
+SUPPORTED_AUTHORITY_PRODUCT_VERSIONS: tuple[str, ...] = ("0.8.1",)
+
+
+def supported_product_versions_text() -> str:
+    return ", ".join(SUPPORTED_AUTHORITY_PRODUCT_VERSIONS)
+
+
+def product_version_refusal(product_version: str | None) -> str | None:
+    """The product-version half of the authority decision.
+
+    Pure and stateless: it is called *by*
+    :func:`validate_authority_installation`, never in place of it, so ``doctor``
+    and execution can only ever differ in wording, never in verdict.
+    """
+    if not product_version:
+        return (
+            "product version is missing or unknown; production authority "
+            "requires an accepted Tethers product version"
+        )
+    if product_version in SUPPORTED_AUTHORITY_PRODUCT_VERSIONS:
+        return None
+    return (
+        f"product version {product_version} is not supported for production "
+        f"authority (Permission Slip supports {supported_product_versions_text()})"
+    )
+
 
 def _executable_names(stem: str, plat: str) -> tuple[str, ...]:
     if plat == "win32":
@@ -188,6 +220,11 @@ def validate_authority_installation(installation: TethersInstallation) -> str | 
     manufactures product trust: nothing here reads the environment, so an
     environment variable can upgrade *what is found*, but only this predicate
     decides *what may act as authority*.
+
+    Production authority additionally requires an accepted product version
+    (``SUPPORTED_AUTHORITY_PRODUCT_VERSIONS``). A genuinely verified but
+    unsupported Tethers release is refused here -- this is a product-support
+    decision, not a corruption report, and it is checked in exactly one place.
     """
     problems: list[str] = []
 
@@ -200,6 +237,10 @@ def validate_authority_installation(installation: TethersInstallation) -> str | 
         )
     else:
         problems.append(f"product verification is {verification!r}")
+
+    version_problem = product_version_refusal(installation.product_version)
+    if version_problem is not None:
+        problems.append(version_problem)
 
     provenance = installation.provenance
     if provenance == ACCEPTED_AUTHORITY_PROVENANCE:

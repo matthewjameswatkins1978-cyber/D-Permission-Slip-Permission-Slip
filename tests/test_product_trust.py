@@ -287,6 +287,135 @@ class DevelopmentAuthorityTests(ProductTrustHarness, unittest.TestCase):
             self.assertTrue(installation.acceptable_for_authority)
 
 
+class ProductVersionSupportTests(ProductTrustHarness, unittest.TestCase):
+    """Production authority accepts an explicit set of Tethers product versions.
+
+    A genuinely verified bundle of the wrong version is a *product support*
+    refusal, never a corruption report, and never a silent pass.
+    """
+
+    def bundle_version(self, name: str, version: str) -> Path:
+        return make_release_bundle(self.root / name, product_version=version)
+
+    def test_accepted_product_version_is_accepted(self):
+        installation = discover_tethers(
+            probe=True, env=bundle_env(self.bundle_version("v081", "0.8.1")),
+            platform=plat(),
+        )
+        self.assertEqual(installation.product_version, "0.8.1")
+        self.assertEqual(installation.verification, "verified")
+        self.assertIsNone(validate_authority_installation(installation))
+        self.assertTrue(installation.acceptable_for_authority)
+
+    def test_verified_older_release_is_refused_as_unsupported(self):
+        installation = discover_tethers(
+            probe=True, env=bundle_env(self.bundle_version("v080", "0.8.0")),
+            platform=plat(),
+        )
+        # The bytes are genuine; only the product support decision differs.
+        self.assertEqual(installation.verification, "verified")
+        self.assertEqual(installation.provenance, "release_manifest")
+        self.assertFalse(installation.acceptable_for_authority)
+        refusal = validate_authority_installation(installation)
+        self.assertIsNotNone(refusal)
+        self.assertIn("0.8.0", refusal)
+        self.assertIn("0.8.1", refusal)
+        self.assert_refuses_before_startup(installation)
+
+    def test_verified_future_release_is_refused(self):
+        installation = discover_tethers(
+            probe=True, env=bundle_env(self.bundle_version("future", "9.9.9")),
+            platform=plat(),
+        )
+        self.assertEqual(installation.verification, "verified")
+        self.assertFalse(installation.acceptable_for_authority)
+        self.assert_refuses_before_startup(installation)
+
+    def test_missing_product_version_is_refused(self):
+        installation = discover_tethers(
+            probe=True, env=bundle_env(self.bundle_version("no-version", "")),
+            platform=plat(),
+        )
+        self.assertIsNone(installation.product_version)
+        self.assertEqual(installation.verification, "verified")
+        self.assertFalse(installation.acceptable_for_authority)
+        refusal = validate_authority_installation(installation)
+        self.assertIn("missing or unknown", refusal)
+        self.assert_refuses_before_startup(installation)
+
+    def test_doctor_explains_an_unsupported_but_genuine_product(self):
+        report = self.doctor(bundle_env(self.bundle_version("v080", "0.8.0")))
+        # Genuine product: provenance and identity both pass...
+        self.assertEqual(self.check(report, "tethers.provenance")["status"], PASS)
+        self.assertEqual(self.check(report, "tethers.identity")["status"], PASS)
+        self.assertEqual(report["tethers"]["verification"], "verified")
+        self.assertEqual(report["tethers"]["product_version"], "0.8.0")
+        self.assertEqual(report["tethers"]["supported_product_versions"], ["0.8.1"])
+        self.assertIs(report["tethers"]["product_version_supported"], False)
+        self.assertIs(report["tethers"]["acceptable_for_authority"], False)
+        self.assertNotEqual(report["overall"]["status"], PASS)
+
+        # ...but the product version is the reason authority is refused.
+        ready = self.check(report, "tethers.authority_ready")
+        self.assertEqual(ready["status"], "FAIL")
+        self.assertIn("genuine verified release", ready["detail"])
+        self.assertIn("0.8.0", ready["detail"])
+        self.assertIn("0.8.1", ready["detail"])
+        self.assertIn("0.8.1", ready["remediation"])
+        for wording in ("missing", "corrupt", "not found", "engine missing"):
+            self.assertNotIn(wording, ready["detail"].lower())
+
+    def test_missing_version_is_reported_as_missing_not_corrupt(self):
+        report = self.doctor(bundle_env(self.bundle_version("no-version", "")))
+        ready = self.check(report, "tethers.authority_ready")
+        self.assertEqual(ready["status"], "FAIL")
+        self.assertIn("missing or unknown", ready["detail"])
+        self.assertEqual(report["tethers"]["product_version"], None)
+        self.assertIs(report["tethers"]["product_version_supported"], False)
+
+    def test_dev_override_cannot_bypass_version_support(self):
+        env = bundle_env(self.bundle_version("v080", "0.8.0")) | {
+            DEV_UNVERIFIED_ENV: "1"
+        }
+        installation = discover_tethers(probe=False, env=env, platform=plat())
+        self.assertFalse(installation.acceptable_for_authority)
+        refusal = validate_authority_installation(installation)
+        self.assertIn("0.8.0", refusal)
+        self.assert_refuses_before_startup(installation)
+
+        report = self.doctor(env)
+        self.assertIs(report["tethers"]["acceptable_for_authority"], False)
+        self.assertIs(report["tethers"]["product_version_supported"], False)
+        self.assertIn("0.8.0", self.check(report, "tethers.authority_ready")["detail"])
+
+    def test_development_opt_in_is_still_marked_and_never_production(self):
+        # The explicit development boundary still works for an unsupported
+        # version -- but it is permanently development authority, never trust.
+        installation = discover_tethers(
+            probe=False, env=bundle_env(self.bundle_version("v080", "0.8.0")),
+            platform=plat(),
+        )
+        with self.session(
+            installation, allow_unverified_for_development=True
+        ) as session:
+            self.assertTrue(session.development_authority)
+            self.assertFalse(session.acceptable_for_authority)
+            session.hello()
+        self.assertFalse(installation.acceptable_for_authority)
+
+    def test_version_support_is_one_explicit_set_not_a_semver_engine(self):
+        from permission_slip.tethers_install import (
+            SUPPORTED_AUTHORITY_PRODUCT_VERSIONS,
+            product_version_refusal,
+        )
+
+        self.assertEqual(SUPPORTED_AUTHORITY_PRODUCT_VERSIONS, ("0.8.1",))
+        self.assertIsNone(product_version_refusal("0.8.1"))
+        for unsupported in ("0.8.0", "0.8.2", "0.9.0", "1.0.0", "", None):
+            with self.subTest(version=unsupported):
+                self.assertIsNotNone(product_version_refusal(unsupported))
+
+
 class DoctorExecutionEquivalenceTests(ProductTrustHarness, unittest.TestCase):
     """The required invariant: doctor's verdict and execution must agree."""
 
@@ -301,6 +430,12 @@ class DoctorExecutionEquivalenceTests(ProductTrustHarness, unittest.TestCase):
         yield "dev source checkout", isolated_env(
             {DEV_CHECKOUT_ENV: str(self.dev_checkout())}
         )
+        yield "unsupported product version", bundle_env(
+            make_release_bundle(self.root / "v080", product_version="0.8.0")
+        )
+        yield "missing product version", bundle_env(
+            make_release_bundle(self.root / "no-version", product_version="")
+        )
 
     def test_doctor_and_execution_agree_on_every_installation_state(self):
         for label, env in self._scenarios():
@@ -313,6 +448,11 @@ class DoctorExecutionEquivalenceTests(ProductTrustHarness, unittest.TestCase):
                 self.assertEqual(
                     report["overall"]["status"] == PASS, acceptable is True
                 )
+                if report["tethers"]["product_version_supported"] is False:
+                    self.assertFalse(
+                        acceptable,
+                        "an unsupported product version must never be acceptable authority",
+                    )
                 if acceptable is True:
                     self.assertIn("may act as Permission Slip authority", ready_check["detail"])
                 else:
