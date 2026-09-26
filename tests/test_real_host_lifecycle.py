@@ -51,16 +51,6 @@ class DogfoodHarnessBase(unittest.TestCase):
     def setUpClass(cls):
         cls.paths = discover_tethers()
         cls.scratch = tempfile.TemporaryDirectory(prefix="ps-dogfood-")
-        cls.pristine = Path(cls.scratch.name) / "pristine"
-        subprocess.run(
-            ["git", "clone", "--quiet", "--no-hardlinks", str(REPO), str(cls.pristine)],
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(cls.pristine), "remote", "set-url", "origin", CANONICAL_REPOSITORY],
-            check=True,
-        )
-        cls._git_identity(cls.pristine)
 
     @classmethod
     def tearDownClass(cls):
@@ -72,22 +62,27 @@ class DogfoodHarnessBase(unittest.TestCase):
         subprocess.run(["git", "-C", str(repo), "config", "user.name", "Permission Slip Dogfood"], check=True)
 
     def fresh_checkout(self) -> Path:
-        """A new disposable clone. The coordination checkout is never touched."""
-        checkout = self.root / "checkout"
-        if checkout.exists():  # pragma: no cover - one checkout per test
-            import shutil
+        """A new disposable checkout on a **named branch**.
 
-            shutil.rmtree(checkout)
-        subprocess.run(
-            ["git", "clone", "--quiet", "--no-hardlinks", str(self.pristine), str(checkout)],
-            check=True,
-        )
-        # The clone's origin is the local pristine path; a real dogfood checkout
-        # points at the canonical repository, and trusted host context requires
-        # exactly that.
-        subprocess.run(
-            ["git", "-C", str(checkout), "remote", "set-url", "origin", CANONICAL_REPOSITORY],
-            check=True,
+        Built with ``init`` + ``fetch HEAD`` rather than ``clone``: hosted CI
+        checks the source out in detached HEAD, and a clone of that would
+        inherit an unborn or detached HEAD -- which makes ``git merge``
+        normalisation fail closed for the wrong reason. Fetching ``HEAD``
+        explicitly works whether the source is on a branch or detached.
+        """
+        checkout = self.root / "checkout"
+        run = lambda *args: subprocess.run(list(args), check=True)  # noqa: E731
+        run("git", "init", "-q", str(checkout))
+        run("git", "-C", str(checkout), "fetch", "--quiet", str(REPO), "HEAD")
+        run("git", "-C", str(checkout), "checkout", "-q", "-B", "ps-dogfood", "FETCH_HEAD")
+        run(
+            "git",
+            "-C",
+            str(checkout),
+            "remote",
+            "add",
+            "origin",
+            CANONICAL_REPOSITORY,
         )
         self._git_identity(checkout)
         return checkout

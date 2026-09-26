@@ -524,15 +524,22 @@ class RealPushTests(RealHostHarness):
         self.assertEqual(first.status, "succeeded")
 
         # Point the remote ref at an unrelated commit so the admitted source
-        # can no longer fast-forward onto it.
-        tree = subprocess.run(
-            ["git", "-C", str(self.bare), "rev-parse", f"{action.arguments['source_commit']}^{{tree}}"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
+        # can no longer fast-forward onto it. The unrelated commit is created
+        # in the *work* repository -- it has an identity configured and already
+        # holds the tree -- then transferred to the bare repository.
+        tree = self.git("rev-parse", f"{action.arguments['source_commit']}^{{tree}}")
         unrelated = subprocess.run(
-            ["git", "-C", str(self.bare), "commit-tree", tree, "-m", "diverge"],
-            capture_output=True, text=True, check=True,
+            ["git", "-C", str(self.repo), "commit-tree", tree, "-m", "diverge"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
         ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "--quiet", str(self.bare), f"{unrelated}:refs/heads/ps-diverge"],
+            check=True,
+        )
         subprocess.run(
             ["git", "-C", str(self.bare), "update-ref", "refs/heads/feature/foo", unrelated],
             check=True,
@@ -541,7 +548,7 @@ class RealPushTests(RealHostHarness):
             second = self.executor.execute(action)
         self.assertEqual(second.status, "failed")
         self.assertNotEqual(second.status, "succeeded")
-        self.assertEqual(second.detail["exit_code"] != 0, True)
+        self.assertNotEqual(second.detail["exit_code"], 0)
 
     def test_a_push_whose_source_commit_vanished_is_refused(self):
         action = self.feature_action()
