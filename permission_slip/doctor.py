@@ -50,6 +50,7 @@ from .tethers_install import (
     machine_label,
     sha256_file,
     system_label,
+    validate_authority_installation,
     verify_release_provenance,
 )
 
@@ -74,6 +75,7 @@ CHECK_ORDER = (
     "tethers.identity",
     "tethers.hashes",
     "tethers.provenance",
+    "tethers.authority_ready",
     "authority.protocol",
     "state.root",
     "tethers.host_data",
@@ -205,6 +207,8 @@ def run_doctor(
     dev_active = dev_override_active(environ)
     manifest: Path | None = None
     protocol_result: dict[str, Any] | None = None
+    #: ``None`` when no installation could be located at all.
+    acceptable_for_authority: bool | None = None
 
     if locate_error is None:
         assert gate_bin is not None and engine_bin is not None
@@ -309,14 +313,73 @@ def run_doctor(
                 remediation="Upgrade to a Tethers release that implements describe --json.",
             )
 
-        if probe_protocol:
-            try:
-                protocol_result = _probe_protocol(
-                    _installation_from(
-                        gate_bin, engine_bin, product_version, provenance, verification,
-                        discovery_source, engine_source, install_root, manifest, dev_active,
-                    )
+        # The single authority-readiness verdict. ``GateSession`` consults this
+        # same predicate, so a diagnostic "not ready" guarantees that a default
+        # authority session refuses to start.
+        installation: TethersInstallation | None = None
+        if gate_sha and engine_sha:
+            installation = TethersInstallation(
+                gate_bin=gate_bin,
+                engine_bin=engine_bin,
+                install_root=install_root,
+                product_version=product_version,
+                authority_protocol=AUTHORITY_PROTOCOL,
+                gate_sha256=gate_sha,
+                engine_sha256=engine_sha,
+                provenance=provenance,
+                verification=verification,
+                discovery_source=discovery_source,
+                engine_source=engine_source,
+                platform=f"{system_label()} {machine_label()}",
+                release_manifest=manifest,
+                dev_override_active=dev_active,
+                describe=describe,
+            )
+            authority_refusal = validate_authority_installation(installation)
+            ready_status = PASS if authority_refusal is None else FAIL
+            if authority_refusal is None:
+                ready_detail = (
+                    f"Tethers may act as Permission Slip authority ({provenance} "
+                    "release product"
+                    + (f", product {product_version}" if product_version else "")
+                    + ")"
                 )
+            else:
+                ready_detail = (
+                    "Tethers installation may not act as Permission Slip authority: "
+                    f"{authority_refusal}"
+                )
+        else:
+            authority_refusal = "installation binaries could not be hashed"
+            ready_status = UNAVAILABLE
+            ready_detail = f"not checked ({authority_refusal})"
+
+        checks.add(
+            "tethers.authority_ready",
+            ready_status,
+            ready_detail,
+            remediation=(
+                None
+                if ready_status == PASS
+                else "Install the released Tethers bundle so its Gate and engine "
+                "match the bundle SHA256SUMS manifest."
+            ),
+        )
+        acceptable_for_authority = authority_refusal is None
+
+        if not probe_protocol:
+            checks.add("authority.protocol", UNAVAILABLE, "protocol probe disabled")
+        elif authority_refusal is not None:
+            checks.add(
+                "authority.protocol",
+                UNAVAILABLE,
+                "not checked (installation is not verified for authority)",
+                remediation="Verify the installation first; see tethers.authority_ready.",
+            )
+        else:
+            assert installation is not None
+            try:
+                protocol_result = _probe_protocol(installation)
             except TethersProtocolMismatch as exc:
                 checks.add(
                     "authority.protocol",
@@ -338,8 +401,6 @@ def run_doctor(
                     f"{protocol_result.get('protocol')} "
                     f"(product {protocol_result.get('product_version', 'unknown')})",
                 )
-        else:
-            checks.add("authority.protocol", UNAVAILABLE, "protocol probe disabled")
     else:
         code = locate_error.code
         message = str(locate_error)
@@ -369,6 +430,12 @@ def run_doctor(
         checks.add("tethers.discovery", UNAVAILABLE, f"not checked ({message})")
         checks.add("tethers.hashes", UNAVAILABLE, f"not checked ({message})")
         checks.add("tethers.provenance", UNAVAILABLE, f"not checked ({message})")
+        checks.add(
+            "tethers.authority_ready",
+            UNAVAILABLE,
+            f"not checked ({message})",
+            remediation="Install a released Tethers bundle first.",
+        )
         checks.add("tethers.identity", UNAVAILABLE, f"not checked ({message})")
         checks.add("authority.protocol", UNAVAILABLE, f"not checked ({message})")
 
@@ -458,6 +525,7 @@ def run_doctor(
             "dev_override": dev_active,
             "dev_override_variables": list(dev_override_names(environ)),
             "is_dev_checkout": discovery_source == "dev_source_checkout",
+            "acceptable_for_authority": acceptable_for_authority,
         },
         "state": {
             "root": str(root),
@@ -494,37 +562,6 @@ def _summary_for(status: str) -> str:
     if status == UNAVAILABLE:
         return "not ready"
     return "not ready"
-
-
-def _installation_from(
-    gate_bin: Path,
-    engine_bin: Path,
-    product_version: str | None,
-    provenance: str,
-    verification: str,
-    discovery_source: str,
-    engine_source: str,
-    install_root: Path | None,
-    manifest: Path | None,
-    dev_active: bool,
-) -> TethersInstallation:
-    return TethersInstallation(
-        gate_bin=gate_bin,
-        engine_bin=engine_bin,
-        install_root=install_root,
-        product_version=product_version,
-        authority_protocol=AUTHORITY_PROTOCOL,
-        gate_sha256=sha256_file(gate_bin),
-        engine_sha256=sha256_file(engine_bin),
-        provenance=provenance,
-        verification=verification,
-        discovery_source=discovery_source,
-        engine_source=engine_source,
-        platform=f"{system_label()} {machine_label()}",
-        release_manifest=manifest,
-        dev_override_active=dev_active,
-        describe=None,
-    )
 
 
 def render_human(report: dict[str, Any]) -> str:

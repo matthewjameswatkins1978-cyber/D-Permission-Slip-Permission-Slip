@@ -20,7 +20,7 @@ from permission_slip.tethers_client import (
     TethersUnavailable,
 )
 from permission_slip.tethers_install import discover_tethers
-from tests.fake_tethers import bundle_env, isolated_env, make_release_bundle
+from tests.fake_tethers import bundle_env, isolated_env, make_release_bundle, mode_slug
 
 MINIMAL_CONFIG = {
     "format_version": "0.1",
@@ -41,7 +41,9 @@ def plat() -> str:
     return sys.platform
 
 
-class ProtocolTests(unittest.TestCase):
+class GateHarness:
+    """Shared harness: a fake released bundle plus a configured Gate session."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="ps-protocol-")
         self.addCleanup(self.tmp.cleanup)
@@ -51,21 +53,32 @@ class ProtocolTests(unittest.TestCase):
         self.config = self.workdir / "runtime.json"
         self.config.write_text(json.dumps(MINIMAL_CONFIG, indent=2), encoding="utf-8")
 
-    def installation(self, mode: str = "ok"):
-        bundle = make_release_bundle(self.root / f"bundle-{mode}", gate_mode=mode)
-        return discover_tethers(
-            probe=False, env=bundle_env(bundle), platform=plat()
+    def installation(self, mode: str = "ok", *, probe: bool = False):
+        bundle = make_release_bundle(
+            self.root / f"bundle-{mode_slug(mode)}", gate_mode=mode
         )
+        return discover_tethers(probe=probe, env=bundle_env(bundle), platform=plat())
 
-    def session(self, mode: str = "ok", *, response_timeout: float = 15.0) -> GateSession:
+    def session(
+        self,
+        mode: str = "ok",
+        *,
+        response_timeout: float = 15.0,
+        probe: bool = False,
+        **kwargs,
+    ) -> GateSession:
+        slug = mode_slug(mode)
         return GateSession(
             config_path=self.config,
-            trail_path=self.workdir / f"trail-{mode}.jsonl",
-            host_data_root=self.workdir / f"host-data-{mode}",
-            paths=self.installation(mode),
+            trail_path=self.workdir / f"trail-{slug}.jsonl",
+            host_data_root=self.workdir / f"host-data-{slug}",
+            paths=self.installation(mode, probe=probe),
             response_timeout=response_timeout,
+            **kwargs,
         )
 
+
+class ProtocolTests(GateHarness, unittest.TestCase):
     # -- success -----------------------------------------------------------
 
     def test_correct_authority_protocol_hello_succeeds(self):
@@ -175,8 +188,8 @@ class ProtocolTests(unittest.TestCase):
             authority_protocol=AUTHORITY_PROTOCOL,
             gate_sha256="0" * 64,
             engine_sha256="0" * 64,
-            provenance="absent",
-            verification="unverified",
+            provenance="release_manifest",
+            verification="verified",
             discovery_source="explicit_config",
             engine_source="explicit_config",
             platform="Windows x86_64",
@@ -197,6 +210,156 @@ class ProtocolTests(unittest.TestCase):
     def test_isolated_environment_finds_no_tethers(self):
         with self.assertRaises(TethersUnavailable):
             discover_tethers(probe=False, env=isolated_env(), platform=plat())
+
+
+class RequestIdentityContractTests(GateHarness, unittest.TestCase):
+    """The frozen response frame requires schema/request_id/status/result|error."""
+
+    def _expect_fail(self, mode: str, expected_code: str) -> None:
+        session = self.session(mode)
+        session.start()
+        try:
+            with self.assertRaises(TethersUnavailable) as caught:
+                session.hello()
+            self.assertEqual(caught.exception.code, expected_code)
+        finally:
+            session.close()
+
+    def test_missing_response_request_id_fails_closed(self):
+        self._expect_fail("omit:request_id", "malformed_response")
+
+    def test_non_string_response_request_id_fails_closed(self):
+        self._expect_fail("set:request_id=123", "malformed_response")
+
+    def test_boolean_response_request_id_fails_closed(self):
+        self._expect_fail("set:request_id=true", "malformed_response")
+
+    def test_mismatched_response_request_id_fails_closed(self):
+        self._expect_fail('set:request_id="not-my-id"', "request_identity_mismatch")
+
+
+class HelloContractTests(GateHarness, unittest.TestCase):
+    """The frozen ``tethers.authority/1`` hello result contract."""
+
+    def _expect_fail(self, mode: str, error_type=TethersUnavailable, code: str | None = None):
+        session = self.session(mode)
+        session.start()
+        try:
+            with self.assertRaises(error_type) as caught:
+                session.hello()
+            if code is not None:
+                self.assertEqual(caught.exception.code, code)
+        finally:
+            session.close()
+
+    # -- protocol identity --------------------------------------------------
+
+    def test_missing_protocol_versions_fails_closed(self):
+        self._expect_fail("omit:protocol_versions", TethersProtocolMismatch)
+
+    def test_wrong_protocol_versions_type_fails_closed(self):
+        self._expect_fail(
+            'set:protocol_versions="tethers.authority/1"', TethersProtocolMismatch
+        )
+
+    def test_protocol_absent_from_versions_fails_closed(self):
+        self._expect_fail(
+            'set:protocol_versions=["tethers.authority/2"]', TethersProtocolMismatch
+        )
+
+    def test_empty_protocol_versions_fails_closed(self):
+        self._expect_fail("set:protocol_versions=[]", TethersProtocolMismatch)
+
+    # -- authority-critical semantics --------------------------------------
+
+    def test_authority_granted_true_fails_closed(self):
+        self._expect_fail("set:authority_granted=true", code="malformed_response")
+
+    def test_missing_authority_granted_fails_closed(self):
+        self._expect_fail("omit:authority_granted", code="malformed_response")
+
+    def test_authority_granted_zero_fails_closed(self):
+        # Exactly false, not a value that merely compares equal to false.
+        self._expect_fail("set:authority_granted=0", code="malformed_response")
+
+    def test_missing_provider_invocations_fails_closed(self):
+        self._expect_fail("omit:provider_invocations", code="malformed_response")
+
+    def test_non_zero_provider_invocations_fails_closed(self):
+        self._expect_fail("set:provider_invocations=2", code="malformed_response")
+
+    def test_boolean_provider_invocations_fails_closed(self):
+        self._expect_fail("set:provider_invocations=false", code="malformed_response")
+
+    # -- basic expected types ------------------------------------------------
+
+    def test_missing_product_version_fails_closed(self):
+        self._expect_fail("omit:product_version", code="malformed_response")
+
+    def test_non_string_product_version_fails_closed(self):
+        self._expect_fail("set:product_version=123", code="malformed_response")
+
+    def test_missing_features_fails_closed(self):
+        self._expect_fail("omit:features", code="malformed_response")
+
+    def test_wrong_features_type_fails_closed(self):
+        self._expect_fail('set:features="none"', code="malformed_response")
+
+    def test_missing_gate_instance_id_fails_closed(self):
+        self._expect_fail("omit:gate_instance_id", code="malformed_response")
+
+    def test_missing_git_sha_fails_closed(self):
+        self._expect_fail("omit:git_sha", code="malformed_response")
+
+    def test_non_string_git_sha_fails_closed(self):
+        self._expect_fail("set:git_sha=123", code="malformed_response")
+
+    def test_null_git_sha_is_accepted_for_a_released_product(self):
+        with self.session("set:git_sha=null") as session:
+            result = session.hello()
+        self.assertIsNone(result["git_sha"])
+
+    # -- product identity consistency ---------------------------------------
+
+    def test_product_version_must_match_the_independently_discovered_version(self):
+        mode = 'set:product_version="0.0.1"'
+        installation = self.installation(mode, probe=True)
+        # describe --json still reports the bundle's own product version.
+        self.assertEqual(installation.product_version, "9.9.9")
+
+        slug = mode_slug(mode)
+        session = GateSession(
+            config_path=self.config,
+            trail_path=self.workdir / f"trail-{slug}.jsonl",
+            host_data_root=self.workdir / f"host-data-{slug}",
+            paths=installation,
+            response_timeout=15.0,
+        )
+        session.start()
+        try:
+            with self.assertRaises(TethersUnavailable) as caught:
+                session.hello()
+            self.assertEqual(caught.exception.code, "product_version_mismatch")
+        finally:
+            session.close()
+
+    def test_agreeing_product_versions_are_accepted(self):
+        installation = self.installation("ok", probe=True)
+        self.assertEqual(installation.product_version, "9.9.9")
+        slug = mode_slug("ok")
+        session = GateSession(
+            config_path=self.config,
+            trail_path=self.workdir / f"trail-{slug}-agree.jsonl",
+            host_data_root=self.workdir / f"host-data-{slug}-agree",
+            paths=installation,
+            response_timeout=15.0,
+        )
+        session.start()
+        try:
+            result = session.hello()
+        finally:
+            session.close()
+        self.assertEqual(result["product_version"], installation.product_version)
 
 
 if __name__ == "__main__":

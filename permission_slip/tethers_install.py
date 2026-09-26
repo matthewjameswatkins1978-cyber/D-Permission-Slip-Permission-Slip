@@ -77,6 +77,24 @@ class TethersProtocolMismatch(TethersUnavailable):
         super().__init__(message, code="protocol_mismatch")
 
 
+class TethersUnverified(TethersUnavailable):
+    """The installation is not acceptable as Permission Slip's semantic authority.
+
+    Raised *before* the Gate process is launched. Diagnostic trust and
+    execution trust are the same trust model: an installation ``doctor`` would
+    not call ready must never be started as the authority engine.
+    """
+
+    def __init__(self, message: str, *, code: str = "unverified_installation"):
+        super().__init__(message, code=code)
+
+
+#: The only verification state acceptable for production authority use.
+ACCEPTED_AUTHORITY_VERIFICATION = "verified"
+#: The only provenance form acceptable for production authority use.
+ACCEPTED_AUTHORITY_PROVENANCE = "release_manifest"
+
+
 def _executable_names(stem: str, plat: str) -> tuple[str, ...]:
     if plat == "win32":
         # ``.exe`` is the released form; ``.cmd``/``.bat`` are ordinary
@@ -147,11 +165,62 @@ class TethersInstallation:
         return self.dev_override_active or self.discovery_source == "dev_source_checkout"
 
     @property
+    def acceptable_for_authority(self) -> bool:
+        """May this installation act as Permission Slip's semantic authority?"""
+        return validate_authority_installation(self) is None
+
+    @property
     def describe_version(self) -> str | None:
         if not isinstance(self.describe, dict):
             return None
         value = self.describe.get("version")
         return str(value) if isinstance(value, (str, int, float)) else None
+
+
+def validate_authority_installation(installation: TethersInstallation) -> str | None:
+    """The single answer to: may this installation be Permission Slip's authority?
+
+    Returns ``None`` when it may, otherwise the refusal reason. ``GateSession``,
+    ``PermissionSlip`` and ``doctor`` all consult this one predicate, so a
+    diagnostic verdict and an execution verdict can never disagree.
+
+    The development override permits discovery and diagnosis. It never
+    manufactures product trust: nothing here reads the environment, so an
+    environment variable can upgrade *what is found*, but only this predicate
+    decides *what may act as authority*.
+    """
+    problems: list[str] = []
+
+    verification = installation.verification
+    if verification == ACCEPTED_AUTHORITY_VERIFICATION:
+        pass
+    elif verification == "dev_override":
+        problems.append(
+            "development-only override active: installation is unverified/dev"
+        )
+    else:
+        problems.append(f"product verification is {verification!r}")
+
+    provenance = installation.provenance
+    if provenance == ACCEPTED_AUTHORITY_PROVENANCE:
+        pass
+    elif provenance == "dev_override":
+        pass  # already reported through the verification state
+    elif provenance == "absent":
+        problems.append("no release manifest provenance")
+    elif provenance == "mismatch":
+        problems.append("release manifest provenance mismatch")
+    else:
+        problems.append(f"provenance is {provenance!r}")
+
+    if installation.discovery_source == "dev_source_checkout":
+        problems.append("discovered as a development source checkout")
+    if installation.dev_override_active and verification != "dev_override":
+        problems.append("development override flag is set on the installation")
+
+    if not problems:
+        return None
+    return "; ".join(problems)
 
 
 def dev_override_active(env: Mapping[str, str]) -> bool:

@@ -35,7 +35,9 @@ from .tethers_install import (
     TethersInstallation,
     TethersProtocolMismatch,
     TethersUnavailable,
+    TethersUnverified,
     discover_tethers,
+    validate_authority_installation,
 )
 
 __all__ = [
@@ -45,7 +47,9 @@ __all__ = [
     "TethersInstallation",
     "TethersProtocolMismatch",
     "TethersUnavailable",
+    "TethersUnverified",
     "discover_tethers",
+    "validate_authority_installation",
 ]
 
 DEFAULT_RESPONSE_TIMEOUT = 60.0
@@ -65,7 +69,13 @@ class GateError(RuntimeError):
 
 
 class GateSession:
-    """A single persistent ``tethers gate --stdio`` session."""
+    """A single persistent ``tethers gate --stdio`` session.
+
+    The session refuses to launch any Tethers installation that the shared
+    authority-readiness predicate does not accept. Diagnostic trust and
+    execution trust are the same trust model: what ``doctor`` would not call
+    ready is never started as Permission Slip's semantic authority.
+    """
 
     def __init__(
         self,
@@ -75,8 +85,22 @@ class GateSession:
         paths: TethersInstallation | None = None,
         *,
         response_timeout: float = DEFAULT_RESPONSE_TIMEOUT,
+        allow_unverified_for_development: bool = False,
     ):
         self.paths = paths or discover_tethers()
+        self.allow_unverified_for_development = allow_unverified_for_development
+        refusal = validate_authority_installation(self.paths)
+        #: True when this session runs an installation that is *not* verified
+        #: product authority. Never converted to "verified" by any flag.
+        self.development_authority = refusal is not None
+        if refusal is not None and not allow_unverified_for_development:
+            raise TethersUnverified(
+                "Tethers installation is not acceptable as Permission Slip "
+                f"authority: {refusal}. Set "
+                "allow_unverified_for_development=True on this session to run it "
+                "as an explicitly development-only authority."
+            )
+
         self.config_path = Path(config_path).resolve()
         self.trail_path = Path(trail_path).resolve()
         self.host_data_root = Path(host_data_root).resolve()
@@ -86,6 +110,11 @@ class GateSession:
         self._reader: threading.Thread | None = None
         self._request_counter = 0
         self._lock = threading.Lock()
+
+    @property
+    def acceptable_for_authority(self) -> bool:
+        """The shared answer: may this session's installation act as authority?"""
+        return validate_authority_installation(self.paths) is None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -202,8 +231,21 @@ class GateSession:
             raise TethersProtocolMismatch(
                 f"unsupported response schema: {schema!r}"
             )
-        response_id = response.get("request_id")
-        if isinstance(response_id, str) and expected_request_id is not None:
+        # The frozen frame requires schema / request_id / status / result|error.
+        # An anonymous or mislabelled response is never attributed to a request.
+        if expected_request_id is not None:
+            if "request_id" not in response:
+                raise TethersUnavailable(
+                    "Tethers response is missing 'request_id'; refusing to "
+                    "attribute an anonymous response to this request",
+                    code="malformed_response",
+                )
+            response_id = response.get("request_id")
+            if not isinstance(response_id, str):
+                raise TethersUnavailable(
+                    f"Tethers response 'request_id' is not a string: {response_id!r}",
+                    code="malformed_response",
+                )
             if response_id != expected_request_id:
                 raise TethersUnavailable(
                     "Tethers echoed a mismatched request identity: "
@@ -260,30 +302,90 @@ class GateSession:
         return response["result"]
 
     def hello(self) -> dict[str, Any]:
-        """Negotiate the authority protocol and validate the startup response.
+        """Negotiate the authority protocol under the frozen hello contract.
 
-        Fails closed on unsupported protocol identity or on a Gate that
-        reports provider activity (the Gate must emit no provider calls).
+        Protocol identity mismatches raise :class:`TethersProtocolMismatch`.
+        Violations of the rest of the frozen result contract -- including a
+        Gate that claims authority has already been granted, or reports
+        provider activity -- raise :class:`TethersUnavailable`. Product
+        identity independently discovered from the product surface must agree
+        with what the Gate reports. Nothing here infers protocol compatibility
+        from a product version.
         """
         result = self.expect("hello", {})
         if not isinstance(result, dict):
             raise TethersProtocolMismatch("hello result is not an object")
+
         protocol = result.get("protocol")
         if protocol != AUTHORITY_SCHEMA:
             raise TethersProtocolMismatch(
                 f"unsupported authority protocol: {protocol!r} "
                 f"(expected {AUTHORITY_SCHEMA!r})"
             )
+
         versions = result.get("protocol_versions")
-        if isinstance(versions, list) and AUTHORITY_SCHEMA not in versions:
+        if not isinstance(versions, list):
+            raise TethersProtocolMismatch(
+                "hello 'protocol_versions' must be a list, got "
+                f"{type(versions).__name__}: {versions!r}"
+            )
+        if AUTHORITY_SCHEMA not in versions:
             raise TethersProtocolMismatch(
                 f"Gate does not advertise {AUTHORITY_SCHEMA}: {versions!r}"
             )
-        if result.get("provider_invocations") != 0:
+
+        if result.get("authority_granted") is not False:
             raise TethersUnavailable(
-                "hello reported provider_invocations != 0; the Authority Gate "
-                "must not perform provider calls",
+                "hello 'authority_granted' must be exactly false; a Gate may "
+                "never pre-claim granted authority",
                 code="malformed_response",
+            )
+
+        invocations = result.get("provider_invocations")
+        if isinstance(invocations, bool) or not isinstance(invocations, int) or invocations != 0:
+            raise TethersUnavailable(
+                "hello 'provider_invocations' must be exactly 0; the Authority "
+                f"Gate must not perform provider calls, got {invocations!r}",
+                code="malformed_response",
+            )
+
+        product_version = result.get("product_version")
+        if not isinstance(product_version, str) or not product_version:
+            raise TethersUnavailable(
+                "hello 'product_version' must be a non-empty string, got "
+                f"{product_version!r}",
+                code="malformed_response",
+            )
+        if not isinstance(result.get("features"), list):
+            raise TethersUnavailable(
+                f"hello 'features' must be a list, got {result.get('features')!r}",
+                code="malformed_response",
+            )
+        gate_instance_id = result.get("gate_instance_id")
+        if not isinstance(gate_instance_id, str) or not gate_instance_id:
+            raise TethersUnavailable(
+                "hello 'gate_instance_id' must be a non-empty string, got "
+                f"{gate_instance_id!r}",
+                code="malformed_response",
+            )
+        if "git_sha" not in result:
+            raise TethersUnavailable(
+                "hello is missing 'git_sha'", code="malformed_response"
+            )
+        git_sha = result["git_sha"]
+        if git_sha is not None and not isinstance(git_sha, str):
+            raise TethersUnavailable(
+                f"hello 'git_sha' must be null or a string, got {git_sha!r}",
+                code="malformed_response",
+            )
+
+        discovered = self.paths.product_version
+        if isinstance(discovered, str) and discovered and discovered != product_version:
+            raise TethersUnavailable(
+                "product version mismatch: hello reports "
+                f"{product_version!r} but the installation was independently "
+                f"discovered as {discovered!r}",
+                code="product_version_mismatch",
             )
         return result
 

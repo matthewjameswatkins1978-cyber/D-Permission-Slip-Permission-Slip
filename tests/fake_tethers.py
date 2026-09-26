@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 
 FAKE_PRODUCT_VERSION = "9.9.9"
+#: Fixed behaviours. ``omit:<field>`` / ``set:<field>=<json>`` additionally
+#: mutate the hello result (or ``request_id``) to break the frozen contract.
 GATE_MODES = (
     "ok",
     "wrong_protocol",
@@ -24,6 +26,21 @@ GATE_MODES = (
     "provider_calls",
     "cli_error",
 )
+_MUTATION_PREFIXES = ("omit:", "set:")
+
+
+def valid_gate_mode(mode: str) -> bool:
+    return mode in GATE_MODES or mode.startswith(_MUTATION_PREFIXES)
+
+
+def mode_slug(mode: str) -> str:
+    """Filesystem-safe directory name for a (possibly punctuated) mode."""
+    import hashlib
+    import re
+
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", mode)[:48]
+    digest = hashlib.sha256(mode.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}-{digest}"
 
 _GATE_SCRIPT = '''\
 import json, sys
@@ -44,13 +61,35 @@ HELLO = {{
 
 def emit(payload, schema="tethers.authority/1"):
     payload = dict(payload)
-    payload["request_id"] = request_id
     if MODE == "wrong_schema":
         payload["schema"] = "tethers.authority/2"
     else:
         payload["schema"] = schema
+    if MODE == "omit:request_id":
+        pass
+    elif MODE.startswith("set:request_id="):
+        payload["request_id"] = json.loads(MODE.split("=", 1)[1])
+    else:
+        payload["request_id"] = request_id
     sys.stdout.write(json.dumps(payload) + "\\n")
     sys.stdout.flush()
+
+
+def mutate_hello(result):
+    if MODE == "wrong_protocol":
+        result["protocol"] = "tethers.authority/2"
+        result["protocol_versions"] = ["tethers.authority/2"]
+    if MODE == "provider_calls":
+        result["provider_invocations"] = 3
+    if MODE.startswith("omit:"):
+        field = MODE.split(":", 1)[1]
+        if field != "request_id":
+            result.pop(field, None)
+    elif MODE.startswith("set:"):
+        field, _, literal = MODE.split(":", 1)[1].partition("=")
+        if field != "request_id":
+            result[field] = json.loads(literal)
+    return result
 
 
 def main():
@@ -101,12 +140,7 @@ def main():
         request_id = request.get("request_id")
         operation = request.get("operation")
         if operation == "hello":
-            result = dict(HELLO)
-            if MODE == "wrong_protocol":
-                result["protocol"] = "tethers.authority/2"
-                result["protocol_versions"] = ["tethers.authority/2"]
-            if MODE == "provider_calls":
-                result["provider_invocations"] = 3
+            result = mutate_hello(dict(HELLO))
             if MODE == "cli_error":
                 emit({{"status": "error", "error": {{"code": "FAKE", "message": "fake"}}}},
                      schema="tethers.cli/1")
@@ -147,7 +181,7 @@ def _launcher(directory: Path, script: Path) -> Path:
 
 def make_fake_gate(directory: Path, mode: str = "ok") -> Path:
     """Write a fake Gate executable into ``directory``; returns its path."""
-    if mode not in GATE_MODES:  # pragma: no cover - guard against typos
+    if not valid_gate_mode(mode):  # pragma: no cover - guard against typos
         raise ValueError(f"unknown fake gate mode {mode!r}")
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "_fake_tethers_gate.py"

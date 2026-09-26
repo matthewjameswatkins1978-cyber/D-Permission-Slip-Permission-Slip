@@ -102,6 +102,7 @@ class PermissionSlip:
         workdir: str | Path | None = None,
         repo_root: str | Path | None = None,
         paths=None,
+        allow_unverified_tethers_for_development: bool = False,
     ):
         self.doctrine_path = Path(doctrine_path).resolve()
         self.doctrine = doctrine_module.load_doctrine(self.doctrine_path)
@@ -115,11 +116,14 @@ class PermissionSlip:
         self.adapter = ActionAdapter(self.doctrine, repo_root=self.repo_root)
         self.executor = FixtureExecutor(self.repo_root)
 
+        # Refuses unverified / development / provenance-mismatched installations
+        # before any Gate process exists, unless explicitly opted in above.
         self._session = GateSession(
             config_path=self.fixture_dir / "runtime.json",
             trail_path=self.workdir / "trail.jsonl",
             host_data_root=self.workdir / "host-data",
             paths=paths,
+            allow_unverified_for_development=allow_unverified_tethers_for_development,
         )
         self.hello_result: dict[str, Any] | None = None
 

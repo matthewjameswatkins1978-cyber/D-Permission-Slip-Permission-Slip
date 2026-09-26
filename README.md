@@ -199,6 +199,34 @@ is absent is reported as `unverified`, never as a pass. **No `.git` directory
 is required**, and normal operation never probes `.deps/tethers`,
 `D:\tethers-lang`, or any Tethers checkout.
 
+### Verified Tethers is the authority
+
+`doctor` and the authority path share **one** predicate,
+`validate_authority_installation`. A production `GateSession` /
+`PermissionSlip` refuses to launch any installation that is not
+`verified` with `release_manifest` provenance and not development-only:
+
+| state | doctor | default authority session |
+| --- | --- | --- |
+| released bundle matching `SHA256SUMS` | `PASS` | starts |
+| no release manifest | not `PASS` | **refuses before the Gate starts** |
+| manifest mismatch | not `PASS` | **refuses** |
+| dev override active | not `PASS` (`unverified/dev`) | **refuses** |
+| explicit source checkout | not `PASS` (dev) | **refuses** |
+
+The invariant is one-way but absolute: **if `doctor` says the installation is
+not verified for authority, a default authority session does not proceed.**
+
+Development authority exists only through an explicit call-boundary opt-in —
+`GateSession(..., allow_unverified_for_development=True)` or
+`PermissionSlip(..., allow_unverified_tethers_for_development=True)` — and such
+a session is permanently marked `development_authority`. The
+`PERMISSION_SLIP_DEV_TETHERS_UNVERIFIED` variable may permit *discovery and
+diagnosis*; it never upgrades an installation into a trusted production
+authority engine.
+
+> development override permits testing; it does not manufacture product trust.
+
 Development-only source discovery exists behind one explicitly named switch:
 
 ```powershell
