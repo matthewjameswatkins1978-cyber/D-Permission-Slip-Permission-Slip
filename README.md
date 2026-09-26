@@ -58,8 +58,11 @@ Layout:
 | Path | Purpose |
 | --- | --- |
 | `doctrine/matthew.v0.1.json` | Customer Zero doctrine (human source) |
-| `permission_slip/doctrine_contract.py` | Doctrine Contract v1: validate, canonicalise, digest |
+| `permission_slip/doctrine_contract.py` | Doctrine Contract v1: validate, canonicalise, digest, migrate |
 | `permission_slip/doctrine.py` | Compiles a contract-valid doctrine into Tethers fixtures |
+| `permission_slip/doctrine_export.py` | Portable export/import envelope (a doctrine and its digest, nothing else) |
+| `permission_slip/doctrine_store.py` | State-owned candidates, active pointer, explicit adoption |
+| `permission_slip/doctrine_diff.py` | Domain-aware doctrine diff: consequential vs presentation |
 | `permission_slip/actions.py` | Trusted action adapter / trust boundary |
 | `permission_slip/tethers_install.py` | Tethers product discovery, identity, provenance, provisioning |
 | `permission_slip/tethers_client.py` | `tethers.authority/1` stdio client + startup contract |
@@ -70,13 +73,45 @@ Layout:
 | `permission_slip/executor.py` | Safe fixture external executor |
 | `permission_slip/spike.py` | Vertical orchestration |
 | `tethers-fixture/` | Compiled inspectable Tethers runtime/config fixtures |
-| `tests/` | Authority matrix, discovery, protocol, doctor, state, version support, release lock |
+| `tests/` | Authority matrix, discovery, protocol, doctor, state, version support, release lock, doctrine contract and portability |
 | `tests/fake_tethers.py` | Fake released-Tethers bundles (fakes, clearly separated) |
 | `tests/support.py` | Temporary Git repositories with controlled remotes (no network) |
 | `scripts/` | Spike runner, release acquisition and the product proof |
 | `verification/tethers-v0.8.1.lock.json` | Accepted published Tethers 0.8.1 release lock (assets + SHA-256) |
 | `scripts/tethers_release.py` | Acquire/verify/extract the published release (setup machinery, never runtime) |
 | `scripts/tethers_product_proof.py` | Real packaged-Tethers consumer proof: discovery -> doctor -> hello -> lifecycle |
+
+## Doctrine portability
+
+The doctrine is portable, but portability never confers authority:
+
+```text
+candidate  ->  inspect  ->  diff  ->  explicit adopt
+```
+
+- `permission-slip doctrine export <file> --output <file>` writes a closed,
+  deterministic envelope (`permission-slip.doctrine-export/1`) holding only the
+  validated doctrine, its schema and its recomputed `sha256:` digest -- no
+  paths, no timestamps, no secrets, no compiled fixtures. Same doctrine, same
+  bytes.
+- `permission-slip doctrine import <file>` verifies that envelope and stores it
+  as a **candidate** under the Permission Slip state root, named by its own
+  digest. Import does not activate. Migration does not activate. Diffing does
+  not.
+- `permission-slip doctrine diff <before> <after>` reports what changed, naming
+  the concrete semantic item (`git.history.rewrite standing changed ASK ->
+  ALLOW`) and classifying each change as `CONSEQUENTIAL` or `PRESENTATION`. It
+  reports; it does not judge, and it is not an authority. Either operand may be
+  the literal `active`.
+- `permission-slip doctrine active` reports the adopted doctrine, and
+  `permission-slip doctrine adopt --candidate <digest> --expect-current <digest|none>`
+  is the **only** operation that can change it. Adoption is a compare-and-swap:
+  if the active doctrine is not exactly what the caller expected, it refuses.
+
+Adoption proves *that* an explicit operation happened against the expected
+state. It does not yet prove *who* invoked it; identity-backed proof of the
+adopting human belongs to later trusted-identity work and is deliberately not
+simulated here.
 
 ## Trust boundary
 
