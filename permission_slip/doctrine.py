@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "permission-slip.doctrine/1"
+from . import doctrine_contract
+
+SCHEMA = doctrine_contract.SCHEMA_ID
 PROVIDER_IDENTITY = "permission-slip-fixture"
 PROVIDER_DISPLAY = "Permission Slip Fixture"
 CAPABILITY_VERSION = 1
@@ -77,16 +79,25 @@ OUTPUT_SCHEMA = {
 
 
 class DoctrineError(ValueError):
-    """Raised when a doctrine cannot be compiled."""
+    """Raised when a doctrine is valid but this compiler cannot materialise it."""
+
+
+def _unsupported(detail: str) -> str:
+    # Structural validity and implementation support are different questions.
+    # A doctrine that satisfies Doctrine Contract v1 but has no materialisation
+    # shape here is not a malformed document -- it is outside this compiler's
+    # support, and the message says so.
+    return f"valid doctrine contract, unsupported by this compiler: {detail}"
 
 
 def load_doctrine(path: str | Path) -> dict[str, Any]:
-    path = Path(path)
-    with path.open("r", encoding="utf-8") as handle:
-        doctrine = json.load(handle)
-    if doctrine.get("schema") != SCHEMA:
-        raise DoctrineError(f"unsupported doctrine schema: {doctrine.get('schema')!r}")
-    return doctrine
+    """Read a doctrine document and return it only if Contract v1 accepts it.
+
+    Parsing, duplicate-key detection and validation all belong to the
+    contract; this function owns no structural rules of its own.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    return doctrine_contract.parse_doctrine_json(text)
 
 
 def slug(action: str) -> str:
@@ -96,10 +107,9 @@ def slug(action: str) -> str:
 def _jcs_bytes(value: Any) -> bytes:
     # RFC 8785 for the value domain used by manifests (strings, integers,
     # booleans, null, arrays, objects; no floats). Matches Tethers'
-    # serde_json_canonicalizer.
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    # serde_json_canonicalizer. The encoder itself is shared with Doctrine
+    # Contract v1 so the two digest domains can never disagree.
+    return doctrine_contract.canonical_json_bytes(value)
 
 
 def manifest_digest(manifest: dict[str, Any]) -> str:
@@ -121,23 +131,26 @@ def _build_manifest(capability: dict[str, Any]) -> dict[str, Any]:
     action = capability["action"]
     shape = CAPABILITY_SHAPES.get(action)
     if shape is None:
-        raise DoctrineError(f"no materialisation shape for capability {action!r}")
+        raise DoctrineError(_unsupported(f"no materialisation shape for capability {action!r}"))
 
-    scope = capability.get("scope", {"kind": "unrestricted"})
-    scope_kind = scope.get("kind")
+    scope = capability["scope"]
+    scope_kind = scope["kind"]
     if capability["standing"] == "allow" and scope_kind != "path_prefix":
         raise DoctrineError(
-            f"capability {action!r} stands allow and therefore needs a path_prefix scope"
+            _unsupported(
+                f"capability {action!r} stands allow and therefore needs a "
+                "path_prefix scope"
+            )
         )
     if scope_kind == "path_prefix":
         permission_scope: Any = {
             "kind": "path_prefix",
-            "allowed_prefixes": list(scope.get("prefixes", [])),
+            "allowed_prefixes": list(scope["prefixes"]),
         }
     elif scope_kind == "unrestricted":
         permission_scope = None
     else:
-        raise DoctrineError(f"unsupported scope kind {scope_kind!r} for {action!r}")
+        raise DoctrineError(_unsupported(f"scope kind {scope_kind!r} for {action!r}"))
 
     per_call_required = permission_scope is None
     manifest: dict[str, Any] = {
@@ -145,7 +158,7 @@ def _build_manifest(capability: dict[str, Any]) -> dict[str, Any]:
         "capability_name": action,
         "capability_version": CAPABILITY_VERSION,
         "title": f"Permission Slip fixture: {action}",
-        "description": capability.get("purpose", "Permission Slip spike fixture."),
+        "description": capability["purpose"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -155,9 +168,9 @@ def _build_manifest(capability: dict[str, Any]) -> dict[str, Any]:
             "additionalProperties": False,
         },
         "output_schema": OUTPUT_SCHEMA,
-        "effects": list(capability.get("effects", ["fixture.test"])),
+        "effects": list(capability["effects"]),
         "permission_scope": permission_scope,
-        "reversibility": capability.get("reversibility", "reversible"),
+        "reversibility": capability["reversibility"],
         "determinism": "deterministic",
         "idempotency": {
             "mechanism": "argument_key",
@@ -268,13 +281,14 @@ def _input_fact(fact: str) -> dict[str, Any]:
 
 
 def compile_doctrine(doctrine: dict[str, Any], target: str | Path) -> CompiledFixture:
+    # A valid contract is a precondition, not an assumption: nothing is
+    # written until the document has passed Doctrine Contract v1.
+    doctrine_contract.validate_doctrine(doctrine)
     target = Path(target)
     (target / "tethers").mkdir(parents=True, exist_ok=True)
     (target / "manifests").mkdir(parents=True, exist_ok=True)
 
-    capabilities = doctrine.get("capabilities")
-    if not isinstance(capabilities, list) or not capabilities:
-        raise DoctrineError("doctrine has no capabilities")
+    capabilities = doctrine["capabilities"]
 
     compiled = CompiledFixture(target=target, config_path=target / "runtime.json")
     tethers_config: list[dict[str, Any]] = []
@@ -286,7 +300,7 @@ def compile_doctrine(doctrine: dict[str, Any], target: str | Path) -> CompiledFi
         action = capability["action"]
         shape = CAPABILITY_SHAPES.get(action)
         if shape is None:
-            raise DoctrineError(f"no materialisation shape for capability {action!r}")
+            raise DoctrineError(_unsupported(f"no materialisation shape for capability {action!r}"))
         manifest = _build_manifest(capability)
         name = f"{slug(action)}.json"
         (target / "manifests" / name).write_text(
@@ -326,7 +340,7 @@ def compile_doctrine(doctrine: dict[str, Any], target: str | Path) -> CompiledFi
             {
                 "name": action,
                 "version": CAPABILITY_VERSION,
-                "reason": capability.get("purpose", "Permission Slip spike"),
+                "reason": capability["purpose"],
             }
         )
 
@@ -360,7 +374,7 @@ def compile_doctrine(doctrine: dict[str, Any], target: str | Path) -> CompiledFi
             scope_arg=scope_arg,
             requires=requires,
             standing=capability["standing"],
-            reversibility=capability.get("reversibility", "reversible"),
+            reversibility=capability["reversibility"],
         )
 
     runtime = {
