@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -46,46 +47,63 @@ FAILING_PROFILES = {
 }
 
 
+def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *(["-C", str(cwd)] if cwd else []), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def build_dogfood_checkout(source: Path, destination: Path) -> Path:
+    """Materialise ``source``'s HEAD into ``destination`` on a named branch.
+
+    Built with ``init`` + ``fetch`` rather than ``clone``, for two independent
+    host shapes that each broke an earlier attempt:
+
+    * **detached HEAD.** Hosted CI checks the source out detached, and a clone
+      inherits that -- after which ``git merge`` normalisation fails closed for
+      the wrong reason (there is no target ref to bind). Fetching ``HEAD``
+      explicitly and creating ``ps-dogfood`` fixes it either way.
+    * **shallow source.** Hosted CI's checkout is also shallow. A plain
+      ``fetch <path> HEAD`` there *warns* ("shallow roots are not allowed to be
+      updated"), **exits 0**, and leaves no ``FETCH_HEAD`` -- so the failure
+      surfaces later as a confusing "not a commit". ``--depth=1`` is
+      shallow-aware on both sides and works for a full repository too.
+
+    ``FETCH_HEAD`` is asserted rather than assumed, because the fetch's own exit
+    status is not trustworthy against a shallow source.
+    """
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", str(destination))
+    fetch = _git("fetch", "--quiet", "--depth=1", "--no-tags", str(source), "HEAD",
+                 cwd=destination)
+    if not (destination / ".git" / "FETCH_HEAD").is_file():
+        raise AssertionError(
+            f"fetching HEAD from {source} produced no FETCH_HEAD "
+            f"(shallow or otherwise unusable source): "
+            f"{(fetch.stderr or fetch.stdout).strip()}"
+        )
+    _git("checkout", "-q", "-B", "ps-dogfood", "FETCH_HEAD", cwd=destination)
+    _git("remote", "add", "origin", CANONICAL_REPOSITORY, cwd=destination)
+    _git("config", "user.email", "dogfood@example.invalid", cwd=destination)
+    _git("config", "user.name", "Permission Slip Dogfood", cwd=destination)
+    return destination
+
+
 class DogfoodHarnessBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.paths = discover_tethers()
-        cls.scratch = tempfile.TemporaryDirectory(prefix="ps-dogfood-")
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.scratch.cleanup()
-
-    @staticmethod
-    def _git_identity(repo: Path) -> None:
-        subprocess.run(["git", "-C", str(repo), "config", "user.email", "dogfood@example.invalid"], check=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Permission Slip Dogfood"], check=True)
 
     def fresh_checkout(self) -> Path:
-        """A new disposable checkout on a **named branch**.
-
-        Built with ``init`` + ``fetch HEAD`` rather than ``clone``: hosted CI
-        checks the source out in detached HEAD, and a clone of that would
-        inherit an unborn or detached HEAD -- which makes ``git merge``
-        normalisation fail closed for the wrong reason. Fetching ``HEAD``
-        explicitly works whether the source is on a branch or detached.
-        """
-        checkout = self.root / "checkout"
-        run = lambda *args: subprocess.run(list(args), check=True)  # noqa: E731
-        run("git", "init", "-q", str(checkout))
-        run("git", "-C", str(checkout), "fetch", "--quiet", str(REPO), "HEAD")
-        run("git", "-C", str(checkout), "checkout", "-q", "-B", "ps-dogfood", "FETCH_HEAD")
-        run(
-            "git",
-            "-C",
-            str(checkout),
-            "remote",
-            "add",
-            "origin",
-            CANONICAL_REPOSITORY,
-        )
-        self._git_identity(checkout)
-        return checkout
+        """A new disposable checkout. The coordination checkout is never mutated."""
+        return build_dogfood_checkout(REPO, self.root / "checkout")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="ps-lifecycle-")
@@ -541,6 +559,82 @@ class DogfoodHarnessEntryPointTests(DogfoodHarnessBase):
         self.assertEqual(completed.returncode, 1)
         self.assertIn("NOT READY", completed.stdout)
         self.assertIn("adopt", completed.stdout.lower())
+
+
+class DogfoodCheckoutSourceShapeTests(unittest.TestCase):
+    """The harness must survive the repository shapes hosted CI actually gives it.
+
+    Both bugs that put this here were invisible on a developer machine: a local
+    ``git clone`` silently ignores ``--depth``, so a developer never holds a
+    genuinely shallow source, and a local checkout is on a branch rather than
+    detached. These tests build the real CI shape -- ``init`` + shallow
+    ``file://`` fetch + forced detached checkout, which is what leaves a
+    ``.git/shallow`` behind -- and fail if the builder stops being
+    shallow-aware.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="ps-checkout-shape-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def make_source(self, *, shallow: bool, detached: bool) -> Path:
+        source = self.root / ("shallow" if shallow else "full")
+        # file:// forces real transport negotiation; a bare local path would let
+        # clone ignore --depth and produce a misleadingly "full" source.
+        _git("clone", "-q", "--no-hardlinks", *(["--depth", "1"] if shallow else []),
+             Path(REPO).as_uri(), str(source))
+        head = _git("rev-parse", "HEAD", cwd=source).stdout.strip()
+        if detached:
+            _git("checkout", "-q", "--detach", head, cwd=source)
+        if shallow:
+            self.assertTrue(
+                (source / ".git" / "shallow").is_file(),
+                "test is meaningless unless the source really is shallow",
+            )
+        return source
+
+    def assert_usable_checkout(self, checkout: Path) -> None:
+        self.assertEqual(
+            _git("symbolic-ref", "--quiet", "HEAD", cwd=checkout).stdout.strip(),
+            "refs/heads/ps-dogfood",
+            "merge normalisation needs a named target ref, not detached HEAD",
+        )
+        self.assertTrue((checkout / "permission_slip" / "host_executor.py").is_file())
+        self.assertTrue((checkout / "tests" / "test_state_root.py").is_file())
+        self.assertEqual(
+            _git("remote", "get-url", "--push", "--all", "origin", cwd=checkout).stdout.strip(),
+            CANONICAL_REPOSITORY,
+        )
+        (checkout / "harness-probe.txt").write_text("x\n", encoding="utf-8")
+        _git("add", "-A", cwd=checkout)
+        _git("commit", "-q", "-m", "harness probe", cwd=checkout)
+        self.assertRegex(_git("rev-parse", "HEAD", cwd=checkout).stdout.strip(), r"^[0-9a-f]{40}$")
+
+    def test_shallow_detached_source_produces_a_named_branch_checkout(self):
+        source = self.make_source(shallow=True, detached=True)
+        self.assert_usable_checkout(build_dogfood_checkout(source, self.root / "out-shallow"))
+
+    def test_shallow_source_on_a_branch_still_works(self):
+        source = self.make_source(shallow=True, detached=False)
+        self.assert_usable_checkout(build_dogfood_checkout(source, self.root / "out-branch"))
+
+    def test_a_full_source_still_works(self):
+        source = self.make_source(shallow=False, detached=True)
+        self.assert_usable_checkout(build_dogfood_checkout(source, self.root / "out-full"))
+
+    def test_trusted_host_context_accepts_the_shallow_built_checkout(self):
+        # The point of the builder is that real execution can proceed on it;
+        # a shallow checkout must not weaken host validation.
+        source = self.make_source(shallow=True, detached=True)
+        checkout = build_dogfood_checkout(source, self.root / "out-host")
+        context = TrustedHostContext.create(repo_root=checkout, doctrine=DOCTRINE)
+        self.assertTrue(context.verified_checkout)
+        self.assertEqual(context.repo_root, checkout.resolve())
+        self.assertEqual(
+            context.canonical_repository,
+            "github.com/matthewjameswatkins1978-cyber/d-permission-slip-permission-slip",
+        )
 
 
 if __name__ == "__main__":
