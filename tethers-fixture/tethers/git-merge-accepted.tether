@@ -10,3 +10,6 @@ when
 do
     git.merge.accepted
         repository: anchor.repository
+        source_commit: anchor.source_commit
+        target_commit: anchor.target_commit
+        target_ref: anchor.target_ref

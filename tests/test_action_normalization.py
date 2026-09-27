@@ -17,6 +17,7 @@ from pathlib import Path
 from permission_slip.actions import (
     ActionAdapter,
     ActionAdapterError,
+    MISSING_FILE_DIGEST,
     UntrustedActorError,
     canonical_repository_identity,
     classify_push_refspec,
@@ -64,6 +65,9 @@ class ActorIdentityTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # A real repository: `git merge <source>` binds an exact source commit
+        # and an exact target ref, so there has to be a HEAD and a ref to bind.
+        init_git_repo(self.tmp.name)
         self.adapter = ActionAdapter(DOCTRINE, repo_root=self.tmp.name)
 
     def test_caller_actor_claim_cannot_select_lucy(self):
@@ -289,43 +293,95 @@ class PathCanonicalisationTests(unittest.TestCase):
         self.repo = Path(self.tmp.name) / "repo"
         self.repo.mkdir(parents=True, exist_ok=True)
         self.adapter = ActionAdapter(DOCTRINE, repo_root=self.repo)
+        self.prefix = self.adapter.host_context.resource_prefix
 
     def canonical(self, path: str) -> str:
+        # `content` is required: an edit is bound to exact before/after bytes.
         return self.adapter.normalize(
-            {"tool": "edit_file", "path": path}, actor_id="worker-agent"
+            {"tool": "edit_file", "path": path, "content": "notes\n"},
+            actor_id="worker-agent",
         ).arguments["path"]
 
+    def in_scope(self, identity: str) -> bool:
+        return identity.startswith(self.prefix)
+
     def test_relative_in_project_path_is_canonical(self):
+        # 0.4A maps a physical path onto the scoped resource identity: the
+        # synthetic Permission Slip prefix plus the path relative to the root.
         self.assertEqual(
             self.canonical("runtime/spike-workspace/notes.txt"),
-            "runtime/spike-workspace/notes.txt",
+            f"{self.prefix}runtime/spike-workspace/notes.txt",
         )
 
     def test_absolute_in_project_path_matches_canonical_relative(self):
         absolute = str(self.repo / "runtime" / "spike-workspace" / "notes.txt")
-        self.assertEqual(self.canonical(absolute), "runtime/spike-workspace/notes.txt")
+        self.assertEqual(
+            self.canonical(absolute),
+            f"{self.prefix}runtime/spike-workspace/notes.txt",
+        )
 
     def test_parent_traversal_outside_project_is_not_made_in_scope(self):
         result = self.canonical("../runtime/spike-workspace/evil.txt")
         self.assertTrue(result.startswith(".."), result)
-        self.assertNotEqual(result, "runtime/spike-workspace/evil.txt")
+        self.assertFalse(self.in_scope(result), result)
 
     def test_absolute_outside_project_is_not_made_in_scope(self):
         outside = str(Path(self.tmp.name) / "outside" / "evil.txt")
         result = self.canonical(outside)
         self.assertTrue(result.startswith("..") or os.path.isabs(result), result)
-        self.assertNotEqual(result, "runtime/spike-workspace/evil.txt")
+        self.assertFalse(self.in_scope(result), result)
 
     def test_traversal_containing_workspace_substring_is_not_in_scope(self):
         result = self.canonical("../../runtime/spike-workspace/evil.txt")
         self.assertIn("runtime/spike-workspace", result)
         self.assertTrue(result.startswith(".."), result)
+        self.assertFalse(self.in_scope(result), result)
 
     def test_normalisation_never_strips_traversal(self):
         # The old ``lstrip("./")`` bug erased leading ``../``.
         result = self.canonical("../../secrets.txt")
         self.assertTrue(result.startswith(".."), result)
         self.assertNotEqual(result, "secrets.txt")
+
+    def test_edit_requires_an_exact_content_payload(self):
+        with self.assertRaises(ActionAdapterError):
+            self.adapter.normalize(
+                {"tool": "edit_file", "path": "runtime/spike-workspace/notes.txt"},
+                actor_id="worker-agent",
+            )
+
+    def test_edit_binds_before_after_and_length_without_leaking_content(self):
+        target = self.repo / "existing.txt"
+        target.write_bytes(b"before\n")
+        payload = "after\n" * 10
+        result = self.adapter.normalize(
+            {"tool": "edit_file", "path": "existing.txt", "content": payload},
+            actor_id="worker-agent",
+        )
+        self.assertEqual(
+            result.arguments["before_digest"],
+            "sha256:" + hashlib.sha256(b"before\n").hexdigest(),
+        )
+        self.assertEqual(
+            result.arguments["after_digest"],
+            "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(result.arguments["content_bytes"], len(payload.encode("utf-8")))
+        # The content itself is sealed: absent from the authority-visible view
+        # and from anything that would reach a trace.
+        self.assertNotIn("content", result.as_dict()["arguments"])
+        self.assertNotIn("content", result.as_dict())
+        self.assertIsNone(
+            {k: v for k, v in result.as_dict().items() if v == payload} or None
+        )
+        self.assertEqual(result.execution_payload, payload.encode("utf-8"))
+
+    def test_missing_file_uses_the_explicit_missing_sentinel(self):
+        result = self.adapter.normalize(
+            {"tool": "edit_file", "path": "not-created-yet.txt", "content": "x"},
+            actor_id="worker-agent",
+        )
+        self.assertEqual(result.arguments["before_digest"], MISSING_FILE_DIGEST)
 
 
 class PromotionalCreditBoundTests(unittest.TestCase):

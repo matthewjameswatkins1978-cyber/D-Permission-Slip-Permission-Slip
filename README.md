@@ -65,22 +65,26 @@ Layout:
 | `permission_slip/adoption_lock.py` | One cross-process advisory lock around the adoption decision |
 | `permission_slip/doctrine_diff.py` | Domain-aware doctrine diff: consequential vs presentation |
 | `permission_slip/actions.py` | Trusted action adapter / trust boundary |
+| `permission_slip/host_context.py` | Immutable trusted host facts: repo root, resource prefix, test profiles |
+| `permission_slip/host_executor.py` | The narrow **real** host executor (tests, exact edit, feature push, ff merge) |
 | `permission_slip/tethers_install.py` | Tethers product discovery, identity, provenance, provisioning |
 | `permission_slip/tethers_client.py` | `tethers.authority/1` stdio client + startup contract |
 | `permission_slip/state.py` | Cross-platform Permission Slip state root |
+| `permission_slip/observability.py` | Forensic flight recorder: run traces, retention, 24h inspect, debug bundle |
 | `permission_slip/doctor.py` | `permission-slip doctor` checks and versioned envelope |
-| `permission_slip/__main__.py` | `permission-slip` CLI (`doctor`, `setup`) |
+| `permission_slip/__main__.py` | `permission-slip` CLI (`doctor`, `setup`, `doctrine`, `inspect`, `trace`, `debug`) |
 | `permission_slip/explanations.py` | Human consequence explanations |
-| `permission_slip/executor.py` | Safe fixture external executor |
+| `permission_slip/executor.py` | Shared executor result contract + the safe fixture executor |
 | `permission_slip/spike.py` | Vertical orchestration |
 | `tethers-fixture/` | Compiled inspectable Tethers runtime/config fixtures |
-| `tests/` | Authority matrix, discovery, protocol, doctor, state, version support, release lock, doctrine contract and portability |
+| `tests/` | Authority matrix, discovery, protocol, doctor, state, version support, release lock, doctrine contract/portability, host context, real executor and observability |
 | `tests/fake_tethers.py` | Fake released-Tethers bundles (fakes, clearly separated) |
 | `tests/support.py` | Temporary Git repositories with controlled remotes (no network) |
-| `scripts/` | Spike runner, release acquisition and the product proof |
+| `scripts/` | Spike runner, release acquisition, the product proof and the dogfood harness |
 | `verification/tethers-v0.8.1.lock.json` | Accepted published Tethers 0.8.1 release lock (assets + SHA-256) |
 | `scripts/tethers_release.py` | Acquire/verify/extract the published release (setup machinery, never runtime) |
 | `scripts/tethers_product_proof.py` | Real packaged-Tethers consumer proof: discovery -> doctor -> hello -> lifecycle |
+| `scripts/permission_slip_dogfood.py` | Trusted launcher: adopted doctrine + host context + real executor + recorder |
 
 ## Doctrine portability
 
@@ -125,6 +129,60 @@ state. It does not yet prove *who* invoked it; identity-backed proof of the
 adopting human belongs to later trusted-identity work and is deliberately not
 simulated here.
 
+## Real host effects
+
+`FixtureExecutor` stays the default everywhere; the real host executor is
+selected explicitly. It performs exactly four narrow effects, and nothing else:
+
+| Effect | Bound identity |
+|---|---|
+| `dev.tests.run` | trusted **named profile** + `command_digest` of the resolved argv |
+| `project.files.edit` | authority `path`, `before_digest`, `after_digest`, `content_bytes` |
+| `git.push.feature` | `source_commit`, `destination_ref`, `remote_transport_digest` |
+| `git.merge.accepted` | `source_commit`, `target_commit`, `target_ref`, fast-forward only |
+
+Common rules:
+
+* **no shell, ever** -- every effect is an `argv` vector with `shell=False`;
+* **the caller never supplies a command**, a repo root, an actor or a transport;
+* the executor consumes **only** what Tethers admitted and never re-reads raw
+  caller intent after COMMIT;
+* file content and the sealed push transport travel beside the
+  `NormalizedAction`, never inside `as_dict()`, never to Tethers, never to a
+  trace -- only their digests are authority-visible;
+* unsupported real effects (history rewrite, publication, uploads, money)
+  fail closed with `unsupported_real_effect` and write no marker;
+* **no writable trace, no real effect**: the recorder must be able to record
+  before a physical effect is attempted.
+
+The temporary `path_prefix` mapping (`runtime/spike-workspace/repos/permission-slip/`)
+is scaffolding until 0.8 provides truthful repository resource scope. It is not
+repository scope and is never described as such.
+
+## Flight recorder
+
+Every session gets `pss_<uuid>` and every attempted action gets `psr_<uuid>`.
+Runs live under the Permission Slip state root -- never in the repository:
+
+```text
+<state>/runs/<run-id>/
+    events.jsonl     ordered permission-slip.trace-event/1 records
+    summary.json     permission-slip.run-summary/1
+    receipt.json     the receipt for this run
+```
+
+```text
+permission-slip inspect --since 24h [--json]
+permission-slip trace --run <run-id> [--json]
+permission-slip debug bundle --run <run-id> --output <file.zip>
+```
+
+Observability is **not** authority: a broken recorder never upgrades ASK or
+DENY, and never reports an effect as successful. Payloads, credentials,
+environment values and subprocess bodies are absent by construction --
+fingerprints, counts and safe identities are what get written. History is
+bounded by a deterministic count policy (soft cap 500, trimming successes
+first; hard cap 1000), and a run that is still being written is never deleted.
 ## Trust boundary
 
 The worker/agent is not trusted to label its own consequences. The adapter

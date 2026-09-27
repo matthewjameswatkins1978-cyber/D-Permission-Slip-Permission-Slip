@@ -18,13 +18,21 @@
       },
       "push_effect": {
         "type": "string"
+      },
+      "source_commit": {
+        "type": "string"
+      },
+      "remote_transport_digest": {
+        "type": "string"
       }
     },
     "required": [
       "repository",
       "remote_repository",
       "destination_ref",
-      "push_effect"
+      "push_effect",
+      "source_commit",
+      "remote_transport_digest"
     ],
     "additionalProperties": false
   },
@@ -81,5 +89,5 @@
     "tool_name": "fixture_git_push_feature",
     "adapter": null
   },
-  "digest": "sha256:1a51194ead12a011d81b12e09c33376f48d271caa992371a21066a2aaaa39686"
+  "digest": "sha256:9e74d0fb58488eb779452fc7e0324abcc6c62427999b40492534b5768287eae1"
 }

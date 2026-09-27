@@ -33,20 +33,45 @@ FIXTURE_FORMAT_VERSION = "0.1"
 # action argument name to its manifest JSON type. ``scope_arg`` names the
 # argument a path_prefix scope is bound to. ``requires`` are the extra trusted
 # facts a Tether condition needs.
+#
+# 0.4A strengthened these shapes so a real physical effect can be re-derived
+# from admitted identity alone: a test run is bound to its **trusted resolved
+# command**, an edit to its **exact before/after bytes**, a push to its
+# **source commit and sealed transport**, and a merge to its **source, target
+# commit and target ref**. Standing doctrine meaning is unchanged -- this is
+# narrower, more precise action input, not a new ALLOW rule.
 CAPABILITY_SHAPES: dict[str, dict[str, Any]] = {
-    "dev.tests.run": {"args": {"path": "string"}, "scope_arg": "path"},
-    "project.files.edit": {"args": {"path": "string"}, "scope_arg": "path"},
+    "dev.tests.run": {
+        "args": {"path": "string", "test_profile": "string", "command_digest": "string"},
+        "scope_arg": "path",
+    },
+    "project.files.edit": {
+        "args": {
+            "path": "string",
+            "before_digest": "string",
+            "after_digest": "string",
+            "content_bytes": "integer",
+        },
+        "scope_arg": "path",
+    },
     "git.push.feature": {
         "args": {
             "repository": "string",
             "remote_repository": "string",
             "destination_ref": "string",
             "push_effect": "string",
+            "source_commit": "string",
+            "remote_transport_digest": "string",
         },
         "scope_arg": "repository",
     },
     "git.merge.accepted": {
-        "args": {"repository": "string"},
+        "args": {
+            "repository": "string",
+            "source_commit": "string",
+            "target_commit": "string",
+            "target_ref": "string",
+        },
         "scope_arg": "repository",
     },
     "data.external_upload.repository": {"args": {"destination": "string"}},

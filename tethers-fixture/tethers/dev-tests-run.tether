@@ -9,3 +9,5 @@ when
 do
     dev.tests.run
         path: anchor.path
+        test_profile: anchor.test_profile
+        command_digest: anchor.command_digest

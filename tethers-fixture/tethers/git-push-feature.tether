@@ -12,3 +12,5 @@ do
         remote_repository: anchor.remote_repository
         destination_ref: anchor.destination_ref
         push_effect: anchor.push_effect
+        source_commit: anchor.source_commit
+        remote_transport_digest: anchor.remote_transport_digest

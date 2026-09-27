@@ -9,3 +9,6 @@ when
 do
     project.files.edit
         path: anchor.path
+        before_digest: anchor.before_digest
+        after_digest: anchor.after_digest
+        content_bytes: anchor.content_bytes
